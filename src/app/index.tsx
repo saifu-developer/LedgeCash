@@ -1,98 +1,127 @@
-import * as Device from 'expo-device';
-import { Platform, StyleSheet } from 'react-native';
+import { useRouter } from 'expo-router';
+import { useState } from 'react';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { AnimatedIcon } from '@/components/animated-icon';
-import { HintRow } from '@/components/hint-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+import { BrandColors } from '@/constants/theme';
+import { useUserStore } from '@/store/users';
 
-function getDevMenuHint() {
-  if (Platform.OS === 'web') {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
+export default function OpeningScreen() {
+  const router = useRouter();
+  const { items } = useUserStore();
+  const owner = items.find((user) => user.role === 'OWNER' && user.status === 'ACTIVE');
+  
+  const [error, setError] = useState('');
+
+  function handleCreateOwner() {
+    if (owner) {
+      setError('Owner already exists. Please login as owner or continue with the existing account.');
+      return;
+    }
+    router.push('/owner-setup');
   }
-  if (Device.isDevice) {
-    return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
-    );
-  }
-  const shortcut = Platform.OS === 'android' ? 'cmd+m (or ctrl+m)' : 'cmd+d';
+
   return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
-  );
-}
-
-export default function HomeScreen() {
-  return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
-        </ThemedView>
-
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
-
-        <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
+    <SafeAreaView style={styles.safeArea}>
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <Image 
+            source={require('@/assets/images/logo-full.png')} 
+            style={styles.logo} 
+            resizeMode="contain" 
           />
-          <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
-        </ThemedView>
+          <Text style={styles.subtitle}>Simple money management</Text>
+        </View>
 
-        {Platform.OS === 'web' && <WebBadge />}
-      </SafeAreaView>
-    </ThemedView>
+        <View style={styles.actions}>
+          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+          
+          <Pressable 
+            style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]} 
+            onPress={handleCreateOwner}>
+            <Text style={styles.primaryButtonText}>Create Owner</Text>
+          </Pressable>
+
+          {owner && (
+            <Pressable 
+              style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]} 
+              onPress={() => router.push({ pathname: '/pin', params: { profileId: owner.id } })}>
+              <Text style={styles.secondaryButtonText}>Login as Owner</Text>
+            </Pressable>
+          )}
+
+          <Pressable 
+            style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]} 
+            onPress={() => router.push('/worker-login')}>
+            <Text style={styles.secondaryButtonText}>Login as Worker</Text>
+          </Pressable>
+        </View>
+      </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    flexDirection: 'row',
-  },
   safeArea: {
     flex: 1,
-    paddingHorizontal: Spacing.four,
-    alignItems: 'center',
-    gap: Spacing.three,
-    paddingBottom: BottomTabInset + Spacing.three,
-    maxWidth: MaxContentWidth,
+    backgroundColor: BrandColors.background,
   },
-  heroSection: {
-    alignItems: 'center',
-    justifyContent: 'center',
+  container: {
     flex: 1,
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.four,
+    paddingHorizontal: 24,
+    paddingTop: 48,
+    paddingBottom: 48,
   },
-  title: {
+  header: {
+    alignItems: 'center',
+    marginBottom: 'auto',
+    marginTop: 'auto',
+  },
+  logo: {
+    width: 220,
+    height: 60,
+    marginBottom: 16,
+  },
+  subtitle: {
+    fontSize: 16,
+    color: '#6B6B6B',
+  },
+  actions: {
+    width: '100%',
+    gap: 16,
+    marginTop: 'auto',
+  },
+  primaryButton: {
+    backgroundColor: BrandColors.green,
+    borderRadius: 12,
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  primaryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  secondaryButton: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    paddingVertical: 16,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E5E5E0',
+  },
+  secondaryButtonText: {
+    color: BrandColors.navy,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  errorText: {
+    color: '#FF3B30',
+    fontSize: 14,
     textAlign: 'center',
+    paddingHorizontal: 8,
   },
-  code: {
-    textTransform: 'uppercase',
-  },
-  stepContainer: {
-    gap: Spacing.three,
-    alignSelf: 'stretch',
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.four,
-    borderRadius: Spacing.four,
+  pressed: {
+    opacity: 0.86,
   },
 });

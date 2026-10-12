@@ -7,20 +7,28 @@ import '@/global.css';
 
 import { Platform } from 'react-native';
 
+export const BrandColors = {
+  navy: '#062650', // Deep Navy from logo
+  green: '#0A9D58', // LedgeCash Green from logo
+  background: '#F7F7F5', // Neutral light background
+};
+
 export const Colors = {
   light: {
-    text: '#000000',
-    background: '#ffffff',
-    backgroundElement: '#F0F0F3',
+    text: BrandColors.navy,
+    background: BrandColors.background,
+    backgroundElement: '#FFFFFF',
     backgroundSelected: '#E0E1E6',
-    textSecondary: '#60646C',
+    textSecondary: '#6B6B6B',
+    primary: BrandColors.green,
   },
   dark: {
     text: '#ffffff',
-    background: '#000000',
-    backgroundElement: '#212225',
-    backgroundSelected: '#2E3135',
+    background: BrandColors.navy,
+    backgroundElement: '#12305A',
+    backgroundSelected: '#1A4072',
     textSecondary: '#B0B4BA',
+    primary: BrandColors.green,
   },
 } as const;
 
