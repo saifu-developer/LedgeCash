@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { getCurrentProfile } from '@/session/current-profile';
+import { getCurrentProfile, isAuthorizedForShop } from '@/session/current-profile';
 import { changeWorkerPin, isValidPin, setWorkerStatus, useUserStore } from '@/store/users';
 
 type WorkerDetailScreenProps = {
@@ -41,7 +41,11 @@ export function WorkerDetailScreen({ workerId }: WorkerDetailScreenProps) {
     );
   }
 
-  if (!worker || worker.role !== 'WORKER') {
+  if (
+    !worker ||
+    worker.role !== 'WORKER' ||
+    (worker.shopId && !isAuthorizedForShop(session, worker.shopId))
+  ) {
     return (
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.container}>

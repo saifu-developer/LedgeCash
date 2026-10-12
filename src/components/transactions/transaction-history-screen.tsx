@@ -49,12 +49,16 @@ export function TransactionHistoryScreen({ role, profileId }: TransactionHistory
   const showOwnerTotals = role === 'OWNER';
   const canManageTransactions = role === 'OWNER';
 
-  function confirmDelete(transaction: Transaction) {
+  async function confirmDelete(transaction: Transaction) {
     const message = 'Delete this transaction? The correction will stay in history.';
 
     if (Platform.OS === 'web') {
       if (typeof window !== 'undefined' && window.confirm(message)) {
-        deleteTransaction(transaction.id);
+        try {
+          await deleteTransaction(transaction.id);
+        } catch (e) {
+          Alert.alert('Error', e instanceof Error ? e.message : 'Failed to delete');
+        }
       }
       return;
     }
@@ -64,7 +68,13 @@ export function TransactionHistoryScreen({ role, profileId }: TransactionHistory
       {
         text: 'Delete',
         style: 'destructive',
-        onPress: () => deleteTransaction(transaction.id),
+        onPress: async () => {
+          try {
+            await deleteTransaction(transaction.id);
+          } catch (e) {
+            Alert.alert('Error', e instanceof Error ? e.message : 'Failed to delete');
+          }
+        },
       },
     ]);
   }

@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { getCurrentProfile } from '@/session/current-profile';
+import { getActiveShopId, getCurrentProfile } from '@/session/current-profile';
 import { useUserStore } from '@/store/users';
 import type { Profile } from '@/types/profile';
 
@@ -18,8 +18,11 @@ function getInitials(name: string): string {
 
 export function WorkerListScreen() {
   const session = getCurrentProfile();
+  const activeShopId = getActiveShopId();
   const { items } = useUserStore();
-  const workers = items.filter((user) => user.role === 'WORKER');
+  const workers = activeShopId
+    ? items.filter((user) => user.role === 'WORKER' && user.shopId === activeShopId)
+    : [];
 
   if (!session || session.role !== 'OWNER') {
     return (

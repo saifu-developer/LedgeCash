@@ -14,6 +14,7 @@ export type ExpenseCategory = (typeof EXPENSE_CATEGORIES)[number];
 
 export type Transaction = {
   id: string;
+  shopId: string;
   type: TransactionType;
   amount: number;
   createdBy: {

@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { getCurrentProfile } from '@/session/current-profile';
+import { getActiveShopId, getCurrentProfile } from '@/session/current-profile';
 import { addWorker, isValidPin } from '@/store/users';
 
 export function AddWorkerScreen() {
@@ -56,11 +56,17 @@ export function AddWorkerScreen() {
       return;
     }
 
+    const activeShopId = getActiveShopId();
+    if (!activeShopId) {
+      setError('No active shop found. Please select or create a shop first.');
+      return;
+    }
+
     submittingRef.current = true;
     setSubmitting(true);
 
     try {
-      await addWorker({ name: trimmedName, pin });
+      await addWorker({ name: trimmedName, pin, shopId: activeShopId });
       setName('');
       setPin('');
       setConfirmPin('');

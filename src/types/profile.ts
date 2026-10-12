@@ -12,6 +12,16 @@ export type Profile = {
   role: UserRole;
   status: UserStatus;
   createdAt: string;
+  shopId?: string;
+};
+
+export type WorkerProfile = Profile & {
+  role: 'WORKER';
+  shopId: string;
+};
+
+export type OwnerProfile = Profile & {
+  role: 'OWNER';
 };
 
 export type User = Profile & {

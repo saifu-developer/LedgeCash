@@ -1,13 +1,18 @@
 import { useSyncExternalStore } from 'react';
 
+import { getDb } from '@/lib/db';
 import { formatInr, isSameCalendarDay } from '@/lib/money';
 import { getDailyOverview } from '@/lib/totals';
 import { transactionTypeLabel } from '@/lib/transactions';
-import { getCurrentProfile } from '@/session/current-profile';
+import {
+  getActiveShopId,
+  getCurrentProfile,
+  isAuthorizedForShop,
+  subscribeToSession,
+} from '@/session/current-profile';
 import { recordAudit } from '@/store/audit';
 import type { Profile } from '@/types/profile';
 import type { ExpenseCategory, Transaction, TransactionType } from '@/types/transaction';
-import { getDb } from '@/lib/db';
 
 type Listener = () => void;
 
@@ -21,6 +26,7 @@ type AddTransactionInput = {
   type: TransactionType;
   amount: number;
   createdBy: Profile;
+  shopId?: string;
   category?: ExpenseCategory;
   description?: string;
 };
@@ -29,16 +35,19 @@ type EditTransactionInput = {
   amount: number;
 };
 
-/**
- * Temporary in-memory ledger. Replace addTransaction / getters with API calls later.
- */
 function todayAt(hours: number, minutes: number): string {
   const date = new Date();
   date.setHours(hours, minutes, 0, 0);
   return date.toISOString();
 }
 
-function atLocal(year: number, monthIndex: number, day: number, hours: number, minutes: number): string {
+function atLocal(
+  year: number,
+  monthIndex: number,
+  day: number,
+  hours: number,
+  minutes: number
+): string {
   return new Date(year, monthIndex, day, hours, minutes, 0, 0).toISOString();
 }
 
@@ -50,10 +59,12 @@ function daysAgo(days: number, hours: number, minutes: number): string {
 }
 
 const now = new Date();
+const SEED_SHOP_ID = 'LC-DEMO01';
 
 const SEED_TRANSACTIONS: Transaction[] = [
   {
     id: 'txn-1',
+    shopId: SEED_SHOP_ID,
     type: 'CASH_IN',
     amount: 2500,
     createdAt: todayAt(9, 15),
@@ -61,6 +72,7 @@ const SEED_TRANSACTIONS: Transaction[] = [
   },
   {
     id: 'txn-2',
+    shopId: SEED_SHOP_ID,
     type: 'CASH_IN',
     amount: 1500,
     createdAt: todayAt(9, 40),
@@ -68,6 +80,7 @@ const SEED_TRANSACTIONS: Transaction[] = [
   },
   {
     id: 'txn-3',
+    shopId: SEED_SHOP_ID,
     type: 'CASH_IN',
     amount: 1000,
     createdAt: todayAt(10, 32),
@@ -75,6 +88,7 @@ const SEED_TRANSACTIONS: Transaction[] = [
   },
   {
     id: 'txn-4',
+    shopId: SEED_SHOP_ID,
     type: 'UPI_IN',
     amount: 500,
     createdAt: todayAt(11, 15),
@@ -82,6 +96,7 @@ const SEED_TRANSACTIONS: Transaction[] = [
   },
   {
     id: 'txn-5',
+    shopId: SEED_SHOP_ID,
     type: 'UPI_IN',
     amount: 2000,
     createdAt: todayAt(11, 45),
@@ -89,6 +104,7 @@ const SEED_TRANSACTIONS: Transaction[] = [
   },
   {
     id: 'txn-7',
+    shopId: SEED_SHOP_ID,
     type: 'UPI_IN',
     amount: 1000,
     createdAt: todayAt(13, 20),
@@ -96,6 +112,7 @@ const SEED_TRANSACTIONS: Transaction[] = [
   },
   {
     id: 'txn-week-1',
+    shopId: SEED_SHOP_ID,
     type: 'CASH_IN',
     amount: 800,
     createdAt: daysAgo(2, 16, 10),
@@ -103,6 +120,7 @@ const SEED_TRANSACTIONS: Transaction[] = [
   },
   {
     id: 'txn-month-1',
+    shopId: SEED_SHOP_ID,
     type: 'UPI_IN',
     amount: 1200,
     createdAt: daysAgo(10, 11, 5),
@@ -110,6 +128,7 @@ const SEED_TRANSACTIONS: Transaction[] = [
   },
   {
     id: 'txn-month-2',
+    shopId: SEED_SHOP_ID,
     type: 'CASH_OUT',
     amount: 900,
     createdAt: daysAgo(12, 18, 40),
@@ -118,6 +137,7 @@ const SEED_TRANSACTIONS: Transaction[] = [
   },
   {
     id: 'txn-year-1',
+    shopId: SEED_SHOP_ID,
     type: 'CASH_IN',
     amount: 3000,
     createdAt: atLocal(now.getFullYear(), Math.max(now.getMonth() - 2, 0), 8, 10, 20),
@@ -125,6 +145,7 @@ const SEED_TRANSACTIONS: Transaction[] = [
   },
   {
     id: 'txn-year-2',
+    shopId: SEED_SHOP_ID,
     type: 'CASH_OUT',
     amount: 1500,
     createdAt: atLocal(now.getFullYear(), Math.max(now.getMonth() - 3, 0), 4, 9, 0),
@@ -133,6 +154,7 @@ const SEED_TRANSACTIONS: Transaction[] = [
   },
   {
     id: 'txn-last-year',
+    shopId: SEED_SHOP_ID,
     type: 'CASH_IN',
     amount: 4500,
     createdAt: atLocal(now.getFullYear() - 1, 6, 18, 14, 30),
@@ -141,13 +163,77 @@ const SEED_TRANSACTIONS: Transaction[] = [
 ];
 
 const listeners = new Set<Listener>();
-let snapshot: TransactionSnapshot = {
+let allTransactions: Transaction[] = [];
+let rawNotice: string | null = null;
+let isHydrated = false;
+let loadPromise: Promise<void> | null = null;
+
+let cachedSnapshot: TransactionSnapshot = {
   items: [],
   notice: null,
   hydrated: false,
 };
 
-let loadPromise: Promise<void> | null = null;
+function computeSnapshot(): TransactionSnapshot {
+  const profile = getCurrentProfile();
+  const activeShopId = getActiveShopId();
+
+  if (!profile || !activeShopId || !isAuthorizedForShop(profile, activeShopId)) {
+    return {
+      items: [],
+      notice: rawNotice,
+      hydrated: isHydrated,
+    };
+  }
+
+  const filtered = sortByNewest(allTransactions.filter((t) => t.shopId === activeShopId));
+  return {
+    items: filtered,
+    notice: rawNotice,
+    hydrated: isHydrated,
+  };
+}
+
+function updateSnapshotAndEmit() {
+  cachedSnapshot = computeSnapshot();
+  listeners.forEach((listener) => listener());
+}
+
+// React to session/active shop changes
+subscribeToSession(() => {
+  updateSnapshotAndEmit();
+});
+
+function subscribe(listener: Listener) {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function getSnapshot(): TransactionSnapshot {
+  return cachedSnapshot;
+}
+
+function resolveAuthorizedShop(requestedShopId?: string): string {
+  const profile = getCurrentProfile();
+  if (!profile) {
+    throw new Error('Authentication required: No profile is currently logged in.');
+  }
+
+  const shopId = requestedShopId ?? getActiveShopId();
+  if (!shopId) {
+    throw new Error('No active shop selected.');
+  }
+
+  if (!isAuthorizedForShop(profile, shopId)) {
+    throw new Error(
+      `Access denied: Profile "${profile.name}" (${profile.role}) is not authorized for shop "${shopId}".`
+    );
+  }
+
+  return shopId;
+}
 
 export function reloadPersistedTransactions() {
   loadPromise = null;
@@ -155,12 +241,31 @@ export function reloadPersistedTransactions() {
 }
 
 async function seedDemoDataIfEmpty(db: any) {
-  const countRow = await db.getFirstAsync('SELECT COUNT(*) as count FROM transactions') as { count: number } | null;
+  const countRow = (await db.getFirstAsync(
+    'SELECT COUNT(*) as count FROM transactions'
+  )) as { count: number } | null;
+
   if (countRow?.count === 0) {
+    // Insert demo shop if not exists
+    await db.runAsync(
+      'INSERT OR IGNORE INTO shops (id, name, ownerId, createdAt) VALUES (?, ?, ?, ?)',
+      [SEED_SHOP_ID, 'Demo Shop', 'owner-irfan-ali', new Date().toISOString()]
+    );
+
     for (const t of SEED_TRANSACTIONS) {
       await db.runAsync(
-        'INSERT OR IGNORE INTO transactions (id, type, amount, createdAt, createdById, createdByName, category, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [t.id, t.type, t.amount, t.createdAt, t.createdBy.id, t.createdBy.name, t.category || null, t.description || null]
+        'INSERT OR IGNORE INTO transactions (id, shopId, type, amount, createdAt, createdById, createdByName, category, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          t.id,
+          t.shopId,
+          t.type,
+          t.amount,
+          t.createdAt,
+          t.createdBy.id,
+          t.createdBy.name,
+          t.category || null,
+          t.description || null,
+        ]
       );
     }
   }
@@ -172,14 +277,16 @@ export function loadPersistedTransactions(): Promise<void> {
   loadPromise = (async () => {
     try {
       const db = await getDb();
-      await seedDemoDataIfEmpty(db);
 
-      const rows = await db.getAllAsync<any>('SELECT * FROM transactions ORDER BY createdAt DESC');
-      
+      const rows = await db.getAllAsync<any>(
+        'SELECT id, shopId, type, amount, createdAt, createdById, createdByName, category, description FROM transactions ORDER BY createdAt DESC'
+      );
+
       let items: Transaction[] = [];
       if (rows.length > 0) {
-        items = rows.map(row => ({
+        items = rows.map((row) => ({
           id: row.id,
+          shopId: row.shopId,
           type: row.type,
           amount: row.amount,
           createdAt: row.createdAt,
@@ -189,30 +296,18 @@ export function loadPersistedTransactions(): Promise<void> {
         }));
       }
 
-      emit({ items, notice: null, hydrated: true });
+      allTransactions = items;
+      isHydrated = true;
+      updateSnapshotAndEmit();
     } catch (e) {
       console.error('Failed to load transactions:', e);
-      emit({ items: [...SEED_TRANSACTIONS], notice: null, hydrated: true });
+      allTransactions = [];
+      isHydrated = true;
+      updateSnapshotAndEmit();
     }
   })();
 
   return loadPromise;
-}
-
-function emit(next: TransactionSnapshot) {
-  snapshot = next;
-  listeners.forEach((listener) => listener());
-}
-
-function subscribe(listener: Listener) {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
-function getSnapshot(): TransactionSnapshot {
-  return snapshot;
 }
 
 function createId(): string {
@@ -221,7 +316,7 @@ function createId(): string {
 
 function sortByNewest(items: Transaction[]): Transaction[] {
   return [...items].sort(
-    (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+    (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
   );
 }
 
@@ -235,7 +330,7 @@ function requireOwner(): Profile {
 }
 
 function findTransaction(id: string): Transaction {
-  const transaction = snapshot.items.find((item) => item.id === id);
+  const transaction = allTransactions.find((item) => item.id === id);
   if (!transaction) {
     throw new Error('Transaction not found.');
   }
@@ -247,11 +342,16 @@ function todayTransactions(items: Transaction[]): Transaction[] {
   return items.filter((transaction) => isSameCalendarDay(transaction.createdAt));
 }
 
-export function addTransaction(input: AddTransactionInput): Transaction {
+export async function addTransaction(input: AddTransactionInput): Promise<Transaction> {
   const session = getCurrentProfile();
+  if (!session) {
+    throw new Error('You must be logged in to record transactions.');
+  }
+
+  const authorizedShopId = resolveAuthorizedShop(input.shopId);
 
   if (input.type === 'CASH_OUT') {
-    if (!session || session.role !== 'OWNER') {
+    if (session.role !== 'OWNER') {
       throw new Error('Only the owner can create cash out transactions.');
     }
 
@@ -263,6 +363,7 @@ export function addTransaction(input: AddTransactionInput): Transaction {
   const description = input.description?.trim();
   const transaction: Transaction = {
     id: createId(),
+    shopId: authorizedShopId,
     type: input.type,
     amount: input.amount,
     createdAt: new Date().toISOString(),
@@ -274,38 +375,71 @@ export function addTransaction(input: AddTransactionInput): Transaction {
     ...(description ? { description } : {}),
   };
 
-  emit({
-    items: [transaction, ...snapshot.items],
-    notice: `${transactionTypeLabel(transaction.type)} of ${formatInr(transaction.amount)} added`,
-    hydrated: snapshot.hydrated,
-  });
+  const db = await getDb();
+  await db.runAsync(
+    'INSERT INTO transactions (id, shopId, type, amount, createdAt, createdById, createdByName, category, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [
+      transaction.id,
+      transaction.shopId,
+      transaction.type,
+      transaction.amount,
+      transaction.createdAt,
+      transaction.createdBy.id,
+      transaction.createdBy.name,
+      transaction.category || null,
+      transaction.description || null,
+    ]
+  );
 
-  getDb().then(db => {
-    db.runAsync(
-      'INSERT OR REPLACE INTO transactions (id, type, amount, createdAt, createdById, createdByName, category, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [transaction.id, transaction.type, transaction.amount, transaction.createdAt, transaction.createdBy.id, transaction.createdBy.name, transaction.category || null, transaction.description || null]
-    ).catch(e => {
-      console.error('Failed to persist transaction:', e);
-      reloadPersistedTransactions();
-    });
-  });
+  allTransactions = [transaction, ...allTransactions];
+  rawNotice = `${transactionTypeLabel(transaction.type)} of ${formatInr(transaction.amount)} added`;
+  updateSnapshotAndEmit();
 
   return transaction;
 }
 
-export function getTransactionById(id: string): Transaction | undefined {
-  return snapshot.items.find((item) => item.id === id);
+export function getTransactionById(id: string, shopId?: string): Transaction | undefined {
+  const transaction = allTransactions.find((item) => item.id === id);
+  if (!transaction) {
+    return undefined;
+  }
+
+  const profile = getCurrentProfile();
+  if (!isAuthorizedForShop(profile, transaction.shopId)) {
+    return undefined;
+  }
+
+  if (shopId && transaction.shopId !== shopId) {
+    return undefined;
+  }
+
+  return transaction;
 }
 
-export function editTransaction(id: string, input: EditTransactionInput): Transaction {
+export async function editTransaction(
+  id: string,
+  input: EditTransactionInput
+): Promise<Transaction> {
   const owner = requireOwner();
   const existing = findTransaction(id);
+
+  if (!isAuthorizedForShop(owner, existing.shopId)) {
+    throw new Error('Access denied: You do not own the shop this transaction belongs to.');
+  }
 
   if (existing.amount === input.amount) {
     return existing;
   }
 
-  recordAudit({
+  const db = await getDb();
+  await db.runAsync('UPDATE transactions SET amount = ? WHERE id = ? AND shopId = ?', [
+    input.amount,
+    existing.id,
+    existing.shopId,
+  ]);
+
+  await recordAudit({
+    shopId: existing.shopId,
     action: 'EDIT',
     transactionId: existing.id,
     originalAmount: existing.amount,
@@ -325,30 +459,29 @@ export function editTransaction(id: string, input: EditTransactionInput): Transa
     amount: input.amount,
   };
 
-  emit({
-    items: snapshot.items.map((item) => (item.id === id ? next : item)),
-    notice: `${transactionTypeLabel(next.type)} updated to ${formatInr(next.amount)}`,
-    hydrated: snapshot.hydrated,
-  });
-
-  getDb().then(db => {
-    db.runAsync(
-      'UPDATE transactions SET amount = ? WHERE id = ?',
-      [next.amount, next.id]
-    ).catch(e => {
-      console.error('Failed to update transaction:', e);
-      reloadPersistedTransactions();
-    });
-  });
+  allTransactions = allTransactions.map((item) => (item.id === id ? next : item));
+  rawNotice = `${transactionTypeLabel(next.type)} updated to ${formatInr(next.amount)}`;
+  updateSnapshotAndEmit();
 
   return next;
 }
 
-export function deleteTransaction(id: string): void {
+export async function deleteTransaction(id: string): Promise<void> {
   const owner = requireOwner();
   const existing = findTransaction(id);
 
-  recordAudit({
+  if (!isAuthorizedForShop(owner, existing.shopId)) {
+    throw new Error('Access denied: You do not own the shop this transaction belongs to.');
+  }
+
+  const db = await getDb();
+  await db.runAsync('DELETE FROM transactions WHERE id = ? AND shopId = ?', [
+    id,
+    existing.shopId,
+  ]);
+
+  await recordAudit({
+    shopId: existing.shopId,
     action: 'DELETE',
     transactionId: existing.id,
     originalAmount: existing.amount,
@@ -363,77 +496,73 @@ export function deleteTransaction(id: string): void {
     ...(existing.description ? { description: existing.description } : {}),
   });
 
-  emit({
-    items: snapshot.items.filter((item) => item.id !== id),
-    notice: `${transactionTypeLabel(existing.type)} of ${formatInr(existing.amount)} deleted`,
-    hydrated: snapshot.hydrated,
-  });
-
-  getDb().then(db => {
-    db.runAsync('DELETE FROM transactions WHERE id = ?', [id])
-      .catch(e => {
-        console.error('Failed to delete transaction:', e);
-        reloadPersistedTransactions();
-      });
-  });
+  allTransactions = allTransactions.filter((item) => item.id !== id);
+  rawNotice = `${transactionTypeLabel(existing.type)} of ${formatInr(existing.amount)} deleted`;
+  updateSnapshotAndEmit();
 }
 
-export function getTransactions(): Transaction[] {
-  return sortByNewest(snapshot.items);
+export function getTransactions(shopId?: string): Transaction[] {
+  const authorizedShopId = resolveAuthorizedShop(shopId);
+  return sortByNewest(allTransactions.filter((transaction) => transaction.shopId === authorizedShopId));
 }
 
-export function getTransactionsByUser(profileId: string): Transaction[] {
-  return getTransactions().filter((transaction) => transaction.createdBy.id === profileId);
+export function getTransactionsByUser(profileId: string, shopId?: string): Transaction[] {
+  return getTransactions(shopId).filter((transaction) => transaction.createdBy.id === profileId);
 }
 
-export function getWorkerPayments(profileId: string): Transaction[] {
-  return getTransactionsByUser(profileId).filter((transaction) => transaction.type !== 'CASH_OUT');
+export function getWorkerPayments(profileId: string, shopId?: string): Transaction[] {
+  return getTransactionsByUser(profileId, shopId).filter((transaction) => transaction.type !== 'CASH_OUT');
 }
 
-export function getRecentTransactions(limit = 8): Transaction[] {
-  return getTransactions().slice(0, limit);
+export function getRecentTransactions(limit = 8, shopId?: string): Transaction[] {
+  return getTransactions(shopId).slice(0, limit);
 }
 
-export function getTodayOverview() {
-  return getDailyOverview(todayTransactions(getTransactions()));
+export function getTodayOverview(shopId?: string) {
+  return getDailyOverview(todayTransactions(getTransactions(shopId)));
 }
 
-export function getTodayOverviewForUser(profileId: string) {
-  return getDailyOverview(todayTransactions(getWorkerPayments(profileId)));
+export function getTodayOverviewForUser(profileId: string, shopId?: string) {
+  return getDailyOverview(todayTransactions(getWorkerPayments(profileId, shopId)));
 }
 
-export function calculateCashIn() {
-  return getTodayOverview().cashIn;
+export function calculateCashIn(shopId?: string) {
+  return getTodayOverview(shopId).cashIn;
 }
 
-export function calculateUpiIn() {
-  return getTodayOverview().upiIn;
+export function calculateUpiIn(shopId?: string) {
+  return getTodayOverview(shopId).upiIn;
 }
 
-export function calculateTotalIn() {
-  return getTodayOverview().totalIn;
+export function calculateTotalIn(shopId?: string) {
+  return getTodayOverview(shopId).totalIn;
 }
 
-export function calculateCashOut() {
-  return getTodayOverview().cashOut;
+export function calculateCashOut(shopId?: string) {
+  return getTodayOverview(shopId).cashOut;
 }
 
-export function calculateBalance() {
-  return getTodayOverview().balance;
+export function calculateBalance(shopId?: string) {
+  return getTodayOverview(shopId).balance;
 }
 
 export function clearSuccessNotice() {
-  if (snapshot.notice === null) {
+  if (rawNotice === null) {
     return;
   }
 
-  emit({
-    items: snapshot.items,
-    notice: null,
-    hydrated: snapshot.hydrated,
-  });
+  rawNotice = null;
+  updateSnapshotAndEmit();
 }
 
 export function useTransactionStore(): TransactionSnapshot {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+export function _resetTransactionStoreForTesting(): void {
+  allTransactions = [];
+  rawNotice = null;
+  isHydrated = false;
+  loadPromise = null;
+  cachedSnapshot = { items: [], notice: null, hydrated: false };
 }

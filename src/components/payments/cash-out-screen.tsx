@@ -41,7 +41,7 @@ export function CashOutScreen() {
     setAmount(cleaned.includes('.') ? `${whole}.${fraction}` : whole);
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (submittingRef.current) {
       return;
     }
@@ -61,7 +61,7 @@ export function CashOutScreen() {
     setSubmitting(true);
 
     try {
-      addTransaction({
+      await addTransaction({
         type: 'CASH_OUT',
         amount: parsed,
         createdBy: owner,

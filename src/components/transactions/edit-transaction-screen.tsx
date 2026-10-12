@@ -75,7 +75,7 @@ export function EditTransactionScreen({ transactionId }: EditTransactionScreenPr
     setAmount(cleaned.includes('.') ? `${whole}.${fraction}` : whole);
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (submittingRef.current) {
       return;
     }
@@ -90,7 +90,7 @@ export function EditTransactionScreen({ transactionId }: EditTransactionScreenPr
     setSubmitting(true);
 
     try {
-      editTransaction(selected.id, { amount: parsed });
+      await editTransaction(selected.id, { amount: parsed });
       setError(null);
       router.replace({
         pathname: '/owner/[action]',

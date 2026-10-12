@@ -30,7 +30,7 @@ export function PaymentEntryScreen({ type, title }: PaymentEntryScreenProps) {
     setAmount(cleaned.includes('.') ? `${whole}.${fraction}` : whole);
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (submittingRef.current) {
       return;
     }
@@ -50,15 +50,21 @@ export function PaymentEntryScreen({ type, title }: PaymentEntryScreenProps) {
     submittingRef.current = true;
     setSubmitting(true);
 
-    addTransaction({
-      type,
-      amount: parsed,
-      createdBy: profile,
-    });
+    try {
+      await addTransaction({
+        type,
+        amount: parsed,
+        createdBy: profile,
+      });
 
-    setAmount('');
-    setError(null);
-    router.replace(getHomeHref(profile.role));
+      setAmount('');
+      setError(null);
+      router.replace(getHomeHref(profile.role));
+    } catch (caught) {
+      submittingRef.current = false;
+      setSubmitting(false);
+      setError(caught instanceof Error ? caught.message : 'Unable to add payment.');
+    }
   }
 
   const session = getCurrentProfile();

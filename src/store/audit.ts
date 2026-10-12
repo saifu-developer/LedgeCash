@@ -1,7 +1,13 @@
 import { useSyncExternalStore } from 'react';
 
-import type { AuditEntry } from '@/types/audit';
 import { getDb } from '@/lib/db';
+import {
+  getActiveShopId,
+  getCurrentProfile,
+  isAuthorizedForShop,
+  subscribeToSession,
+} from '@/session/current-profile';
+import type { AuditEntry } from '@/types/audit';
 
 type Listener = () => void;
 
@@ -12,16 +18,73 @@ type AuditSnapshot = {
 
 type RecordAuditInput = Omit<AuditEntry, 'id' | 'createdAt'>;
 
-/**
- * Independent correction ledger. Entries are never removed when a transaction is deleted.
- */
 const listeners = new Set<Listener>();
-let snapshot: AuditSnapshot = {
+let allAuditEntries: AuditEntry[] = [];
+let isHydrated = false;
+let loadPromise: Promise<void> | null = null;
+
+let cachedSnapshot: AuditSnapshot = {
   items: [],
   hydrated: false,
 };
 
-let loadPromise: Promise<void> | null = null;
+function computeSnapshot(): AuditSnapshot {
+  const profile = getCurrentProfile();
+  const activeShopId = getActiveShopId();
+
+  if (!profile || !activeShopId || !isAuthorizedForShop(profile, activeShopId)) {
+    return {
+      items: [],
+      hydrated: isHydrated,
+    };
+  }
+
+  const filtered = sortByNewest(allAuditEntries.filter((e) => e.shopId === activeShopId));
+  return {
+    items: filtered,
+    hydrated: isHydrated,
+  };
+}
+
+function updateSnapshotAndEmit() {
+  cachedSnapshot = computeSnapshot();
+  listeners.forEach((listener) => listener());
+}
+
+subscribeToSession(() => {
+  updateSnapshotAndEmit();
+});
+
+function subscribe(listener: Listener) {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function getSnapshot(): AuditSnapshot {
+  return cachedSnapshot;
+}
+
+function resolveAuthorizedShop(requestedShopId?: string): string {
+  const profile = getCurrentProfile();
+  if (!profile) {
+    throw new Error('Authentication required: No profile is currently logged in.');
+  }
+
+  const shopId = requestedShopId ?? getActiveShopId();
+  if (!shopId) {
+    throw new Error('No active shop selected.');
+  }
+
+  if (!isAuthorizedForShop(profile, shopId)) {
+    throw new Error(
+      `Access denied: Profile "${profile.name}" (${profile.role}) is not authorized for shop "${shopId}".`
+    );
+  }
+
+  return shopId;
+}
 
 export function reloadPersistedAudit() {
   loadPromise = null;
@@ -34,12 +97,15 @@ export function loadPersistedAudit(): Promise<void> {
   loadPromise = (async () => {
     try {
       const db = await getDb();
-      const rows = await db.getAllAsync<any>('SELECT * FROM audit ORDER BY createdAt DESC');
-      
+      const rows = await db.getAllAsync<any>(
+        'SELECT id, shopId, action, transactionId, originalAmount, newAmount, originalType, createdById, createdByName, correctedById, correctedByName, createdAt, category, description FROM audit ORDER BY createdAt DESC'
+      );
+
       let items: AuditEntry[] = [];
       if (rows.length > 0) {
-        items = rows.map(row => ({
+        items = rows.map((row) => ({
           id: row.id,
+          shopId: row.shopId,
           action: row.action,
           transactionId: row.transactionId,
           originalAmount: row.originalAmount,
@@ -53,30 +119,18 @@ export function loadPersistedAudit(): Promise<void> {
         }));
       }
 
-      emit({ items, hydrated: true });
+      allAuditEntries = items;
+      isHydrated = true;
+      updateSnapshotAndEmit();
     } catch (e) {
       console.error('Failed to load audit:', e);
-      emit({ items: [], hydrated: true });
+      allAuditEntries = [];
+      isHydrated = true;
+      updateSnapshotAndEmit();
     }
   })();
 
   return loadPromise;
-}
-
-function emit(next: AuditSnapshot) {
-  snapshot = next;
-  listeners.forEach((listener) => listener());
-}
-
-function subscribe(listener: Listener) {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
-function getSnapshot(): AuditSnapshot {
-  return snapshot;
 }
 
 function createId(): string {
@@ -85,13 +139,24 @@ function createId(): string {
 
 function sortByNewest(items: AuditEntry[]): AuditEntry[] {
   return [...items].sort(
-    (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+    (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
   );
 }
 
-export function recordAudit(input: RecordAuditInput): AuditEntry {
+export async function recordAudit(input: RecordAuditInput): Promise<AuditEntry> {
+  const profile = getCurrentProfile();
+  if (!profile) {
+    throw new Error('Authentication required to record audit.');
+  }
+
+  const shopId = input.shopId || getActiveShopId();
+  if (!shopId || !isAuthorizedForShop(profile, shopId)) {
+    throw new Error('Access denied: Profile is not authorized for this shop.');
+  }
+
   const entry: AuditEntry = {
     id: createId(),
+    shopId,
     action: input.action,
     transactionId: input.transactionId,
     originalAmount: input.originalAmount,
@@ -110,32 +175,52 @@ export function recordAudit(input: RecordAuditInput): AuditEntry {
     ...(input.description ? { description: input.description } : {}),
   };
 
-  emit({
-    items: [entry, ...snapshot.items],
-    hydrated: snapshot.hydrated,
-  });
+  const db = await getDb();
+  await db.runAsync(
+    'INSERT INTO audit (id, shopId, action, transactionId, originalAmount, newAmount, originalType, createdById, createdByName, correctedById, correctedByName, createdAt, category, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [
+      entry.id,
+      entry.shopId,
+      entry.action,
+      entry.transactionId,
+      entry.originalAmount,
+      entry.newAmount,
+      entry.originalType,
+      entry.createdBy.id,
+      entry.createdBy.name,
+      entry.correctedBy.id,
+      entry.correctedBy.name,
+      entry.createdAt,
+      entry.category || null,
+      entry.description || null,
+    ]
+  );
 
-  getDb().then(db => {
-    db.runAsync(
-      'INSERT OR REPLACE INTO audit (id, action, transactionId, originalAmount, newAmount, originalType, createdById, createdByName, correctedById, correctedByName, createdAt, category, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [entry.id, entry.action, entry.transactionId, entry.originalAmount, entry.newAmount, entry.originalType, entry.createdBy.id, entry.createdBy.name, entry.correctedBy.id, entry.correctedBy.name, entry.createdAt, entry.category || null, entry.description || null]
-    ).catch(e => {
-      console.error('Failed to persist audit entry:', e);
-      reloadPersistedAudit();
-    });
-  });
+  allAuditEntries = [entry, ...allAuditEntries];
+  updateSnapshotAndEmit();
 
   return entry;
 }
 
-export function getAuditEntries(): AuditEntry[] {
-  return sortByNewest(snapshot.items);
+export function getAuditEntries(shopId?: string): AuditEntry[] {
+  const authorizedShopId = resolveAuthorizedShop(shopId);
+  return sortByNewest(allAuditEntries.filter((entry) => entry.shopId === authorizedShopId));
 }
 
-export function getAuditEntriesByTransaction(transactionId: string): AuditEntry[] {
-  return getAuditEntries().filter((entry) => entry.transactionId === transactionId);
+export function getAuditEntriesByTransaction(
+  transactionId: string,
+  shopId?: string
+): AuditEntry[] {
+  return getAuditEntries(shopId).filter((entry) => entry.transactionId === transactionId);
 }
 
 export function useAuditStore(): AuditSnapshot {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+export function _resetAuditStoreForTesting(): void {
+  allAuditEntries = [];
+  isHydrated = false;
+  loadPromise = null;
+  cachedSnapshot = { items: [], hydrated: false };
 }

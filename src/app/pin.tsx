@@ -1,5 +1,5 @@
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -19,42 +19,79 @@ function firstParam(value: string | string[] | undefined): string | undefined {
 }
 
 export default function PinScreen() {
-  const params = useLocalSearchParams<{ profileId?: string | string[] }>();
+  const params = useLocalSearchParams<{
+    profileId?: string | string[];
+    shopId?: string | string[];
+  }>();
   const profileId = firstParam(params.profileId);
+  const shopId = firstParam(params.shopId);
+
   const users = useUserStore();
-  const profile =
+  const rawProfile =
     profileId && users.items.some((user) => user.id === profileId && user.status === 'ACTIVE')
       ? getLoginProfile(profileId)
       : undefined;
 
+  // Validate that a worker belongs to the requested shop if shopId is provided
+  const isShopMismatch = Boolean(
+    rawProfile &&
+      rawProfile.role === 'WORKER' &&
+      shopId &&
+      rawProfile.shopId !== shopId
+  );
+
+  const profile = isShopMismatch ? undefined : rawProfile;
+
   const [pin, setPin] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(
+    isShopMismatch ? 'Worker does not belong to the selected shop.' : null
+  );
   const hasCompletedLogin = useRef(false);
 
-  useEffect(() => {
-    if (hasCompletedLogin.current || pin.length !== PIN_LENGTH || !profile) {
-      return;
-    }
-
-    // Swap `verifyPin` for an API auth check later.
-    if (verifyPin(profile.id, pin)) {
-      hasCompletedLogin.current = true;
-      setCurrentProfile(profile);
-      router.replace(getHomeHref(profile.role));
-      return;
-    }
-
-    setError('Incorrect PIN. Please try again.');
-    setPin('');
-  }, [pin, profile]);
-
   if (!profile) {
-    return null;
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.container}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Go back"
+            onPress={() => router.back()}
+            style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}>
+            <Text style={styles.backButtonText}>Back</Text>
+          </Pressable>
+          <View style={styles.header}>
+            <Text style={styles.name}>Access Denied</Text>
+            <Text style={styles.hint}>
+              {isShopMismatch
+                ? 'Worker does not belong to the selected shop.'
+                : 'Profile not found or inactive.'}
+            </Text>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
   }
 
   function handleDigit(digit: string) {
+    if (hasCompletedLogin.current || pin.length >= PIN_LENGTH || !profile) {
+      return;
+    }
+
     setError(null);
-    setPin((current) => (current.length >= PIN_LENGTH ? current : `${current}${digit}`));
+    const nextPin = `${pin}${digit}`;
+    setPin(nextPin);
+
+    if (nextPin.length === PIN_LENGTH) {
+      if (verifyPin(profile.id, nextPin, shopId)) {
+        hasCompletedLogin.current = true;
+        setCurrentProfile(profile);
+        router.replace(getHomeHref(profile.role));
+        return;
+      }
+
+      setError('Incorrect PIN. Please try again.');
+      setPin('');
+    }
   }
 
   function handleBackspace() {
@@ -74,17 +111,19 @@ export default function PinScreen() {
         </Pressable>
 
         <View style={styles.header}>
-          <Image 
-            source={require('@/assets/images/logo-icon.png')} 
-            style={styles.headerIcon} 
-            resizeMode="contain" 
+          <Image
+            source={require('@/assets/images/logo-icon.png')}
+            style={styles.headerIcon}
+            resizeMode="contain"
           />
           <Text style={styles.prompt}>Enter PIN</Text>
           <Text style={styles.name}>{profile.name}</Text>
           <Text style={styles.hint}>Enter your 4-digit PIN</Text>
         </View>
 
-        <View style={styles.indicators} accessibilityLabel={`PIN entered ${pin.length} of ${PIN_LENGTH} digits`}>
+        <View
+          style={styles.indicators}
+          accessibilityLabel={`PIN entered ${pin.length} of ${PIN_LENGTH} digits`}>
           {Array.from({ length: PIN_LENGTH }, (_, index) => (
             <View
               key={index}

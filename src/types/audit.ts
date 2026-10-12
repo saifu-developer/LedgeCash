@@ -9,6 +9,7 @@ export type AuditActor = {
 
 export type AuditEntry = {
   id: string;
+  shopId: string;
   action: AuditAction;
   transactionId: string;
   originalAmount: number;

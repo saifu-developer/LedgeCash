@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useColorScheme, View } from 'react-native';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
+import { loadPersistedShops, useShopStore } from '@/store/shops';
 import { loadPersistedUsers, useUserStore } from '@/store/users';
 import { loadPersistedTransactions, useTransactionStore } from '@/store/transactions';
 import { loadPersistedAudit, useAuditStore } from '@/store/audit';
@@ -12,16 +13,20 @@ SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
+  const { hydrated: shopsHydrated } = useShopStore();
   const { hydrated: usersHydrated } = useUserStore();
   const { hydrated: txHydrated } = useTransactionStore();
   const { hydrated: auditHydrated } = useAuditStore();
-  
-  const isHydrated = usersHydrated && txHydrated && auditHydrated;
+
+  const isHydrated = shopsHydrated && usersHydrated && txHydrated && auditHydrated;
 
   useEffect(() => {
-    void loadPersistedUsers();
-    void loadPersistedTransactions();
-    void loadPersistedAudit();
+    void (async () => {
+      await loadPersistedShops();
+      await loadPersistedUsers();
+      await loadPersistedTransactions();
+      await loadPersistedAudit();
+    })();
   }, []);
 
   return (

@@ -88,6 +88,7 @@ function parseStoredUsers(value: unknown): User[] | null {
       status: record.status,
       pin: record.pin,
       createdAt: record.createdAt,
+      ...(typeof record.shopId === 'string' ? { shopId: record.shopId } : {}),
     });
   }
 
@@ -182,6 +183,19 @@ export function getWorkers(): Profile[] {
   return snapshot.items.filter((user) => user.role === 'WORKER').map(toPublicProfile);
 }
 
+export function getWorkersByShop(shopId: string): Profile[] {
+  return snapshot.items
+    .filter((user) => user.role === 'WORKER' && user.shopId === shopId)
+    .map(toPublicProfile);
+}
+
+export function getWorkerById(shopId: string, workerId: string): Profile | undefined {
+  const user = snapshot.items.find(
+    (item) => item.id === workerId && item.role === 'WORKER' && item.shopId === shopId
+  );
+  return user ? toPublicProfile(user) : undefined;
+}
+
 export function getUserById(id: string): Profile | undefined {
   const user = snapshot.items.find((item) => item.id === id);
   return user ? toPublicProfile(user) : undefined;
@@ -200,10 +214,28 @@ export function getDisplayName(userId: string, fallback: string): string {
   return getUserById(userId)?.name ?? fallback;
 }
 
-export function verifyPin(profileId: string, pin: string): boolean {
+export function verifyWorkerPin(shopId: string, workerId: string, pin: string): boolean {
+  const user = snapshot.items.find((item) => item.id === workerId);
+  if (!user || user.role !== 'WORKER' || user.status !== 'ACTIVE' || user.shopId !== shopId) {
+    return false;
+  }
+
+  return user.pin === pin;
+}
+
+export function verifyPin(profileId: string, pin: string, expectedShopId?: string): boolean {
   const user = snapshot.items.find((item) => item.id === profileId);
   if (!user || user.status !== 'ACTIVE') {
     return false;
+  }
+
+  if (user.role === 'WORKER') {
+    if (!user.shopId) {
+      return false;
+    }
+    if (expectedShopId && user.shopId !== expectedShopId) {
+      return false;
+    }
   }
 
   return user.pin === pin;
@@ -240,8 +272,17 @@ export async function setupOwner(input: { name: string; pin: string }): Promise<
   return toPublicProfile(owner);
 }
 
-export async function addWorker(input: { name: string; pin: string }): Promise<Profile> {
+export async function addWorker(input: {
+  name: string;
+  pin: string;
+  shopId: string;
+}): Promise<Profile> {
   requireOwner();
+
+  const shopId = input.shopId?.trim();
+  if (!shopId) {
+    throw new Error('A shop is required to create a worker.');
+  }
 
   const name = input.name.trim();
   if (!name) {
@@ -259,6 +300,7 @@ export async function addWorker(input: { name: string; pin: string }): Promise<P
     status: 'ACTIVE',
     pin: input.pin,
     createdAt: new Date().toISOString(),
+    shopId,
   };
 
   await commit({
