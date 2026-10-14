@@ -341,6 +341,47 @@ export async function changeWorkerPin(workerId: string, pin: string): Promise<Pr
   return toPublicProfile(next);
 }
 
+export async function changeOwnerPin(
+  ownerId: string,
+  oldPin: string,
+  newPin: string
+): Promise<Profile> {
+  const session = requireOwner();
+  if (session.id !== ownerId) {
+    throw new Error('You can only change your own PIN.');
+  }
+
+  const user = snapshot.items.find((item) => item.id === ownerId && item.role === 'OWNER');
+  if (!user) {
+    throw new Error('Owner account not found.');
+  }
+
+  if (user.pin !== oldPin) {
+    throw new Error('Incorrect current PIN.');
+  }
+
+  if (!isValidPin(newPin)) {
+    throw new Error('New PIN must be exactly 4 digits.');
+  }
+
+  if (oldPin === newPin) {
+    throw new Error('New PIN must be different from current PIN.');
+  }
+
+  const next = { ...user, pin: newPin };
+  await replaceUser(next);
+  return toPublicProfile(next);
+}
+
 export function useUserStore(): UserSnapshot {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+export async function resetUserStore(): Promise<void> {
+  loadPromise = null;
+  await AsyncStorage.removeItem(STORAGE_KEY);
+  emit({
+    items: [],
+    hydrated: true,
+  });
 }

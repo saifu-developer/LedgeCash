@@ -15,7 +15,8 @@
         "backgroundColor": "#062B55",
         "foregroundImage": "./assets/images/logo-icon.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.anonymous.ledgecash"
     },
     "web": {
       "output": "static",
@@ -31,7 +32,8 @@
           "imageWidth": 288
         }
       ],
-      "expo-sqlite"
+      "expo-sqlite",
+      "expo-sharing"
     ],
     "experiments": {
       "typedRoutes": true,

@@ -6,10 +6,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { BrandColors } from '@/constants/theme';
 import { StatCard } from '@/components/dashboard/stat-card';
 import { TransactionRow } from '@/components/dashboard/transaction-row';
+import { SyncStatusBadge } from '@/components/ui/SyncStatusBadge';
 import { formatInr } from '@/lib/money';
 import { OWNER_ACTIONS, type OwnerAction } from '@/lib/placeholder-actions';
 import { transactionTone } from '@/lib/transactions';
-import { useCurrentProfile } from '@/session/current-profile';
+import { useActiveShopId, useCurrentProfile } from '@/session/current-profile';
 import {
   clearSuccessNotice,
   getRecentTransactions,
@@ -33,9 +34,20 @@ const ACTION_ITEMS = Object.entries(OWNER_ACTIONS) as [OwnerAction, string][];
 export default function OwnerHomeScreen() {
   const router = useRouter();
   const profile = useCurrentProfile();
+  const activeShopId = useActiveShopId();
   const { notice } = useTransactionStore();
-  const overview = getTodayOverview();
-  const recent = getRecentTransactions(8);
+
+  useEffect(() => {
+    if (!profile) {
+      router.replace('/');
+    }
+  }, [profile, router]);
+
+  useEffect(() => {
+    if (profile && profile.role === 'OWNER' && !activeShopId) {
+      router.replace('/shop-setup');
+    }
+  }, [profile, activeShopId, router]);
 
   useEffect(() => {
     if (!notice) {
@@ -49,19 +61,25 @@ export default function OwnerHomeScreen() {
     return () => clearTimeout(timeout);
   }, [notice]);
 
-  if (!profile) {
+  if (!profile || !activeShopId) {
     return null;
   }
+
+  const overview = getTodayOverview();
+  const recent = getRecentTransactions(8);
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
-          <Image 
-            source={require('@/assets/images/logo-compact.png')} 
-            style={styles.headerLogo} 
-            resizeMode="contain" 
-          />
+          <View style={styles.headerRow}>
+            <Image 
+              source={require('@/assets/images/logo-compact.png')} 
+              style={styles.headerLogo} 
+              resizeMode="contain" 
+            />
+            <SyncStatusBadge />
+          </View>
           <Text style={styles.greeting}>
             {greetingPrefix()}, {profile.name}
           </Text>
@@ -73,7 +91,7 @@ export default function OwnerHomeScreen() {
           </View>
         ) : null}
 
-        <Text style={styles.sectionLabel}>Today's Overview</Text>
+        <Text style={styles.sectionLabel}>Today&apos;s Overview</Text>
         <View style={styles.overviewGrid}>
           <StatCard
             label="Cash In"
@@ -207,6 +225,11 @@ const styles = StyleSheet.create({
   },
   header: {
     marginBottom: 28,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   headerLogo: {
     width: 140,

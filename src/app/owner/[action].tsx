@@ -3,6 +3,8 @@ import { useLocalSearchParams } from 'expo-router';
 import { ComingSoonScreen } from '@/components/dashboard/coming-soon-screen';
 import { CashOutScreen } from '@/components/payments/cash-out-screen';
 import { PaymentEntryScreen } from '@/components/payments/payment-entry-screen';
+import { ReportsScreen } from '@/components/reports/ReportsScreen';
+import { SettingsScreen } from '@/components/settings/SettingsScreen';
 import { CorrectionHistoryScreen } from '@/components/transactions/correction-history-screen';
 import { TransactionHistoryScreen } from '@/components/transactions/transaction-history-screen';
 import { AddWorkerScreen } from '@/components/workers/add-worker-screen';
@@ -69,6 +71,34 @@ export default function OwnerActionScreen() {
 
   if (action === 'add-worker') {
     return <AddWorkerScreen />;
+  }
+
+  if (action === 'reports') {
+    if (!profile || profile.role !== 'OWNER') {
+      return (
+        <ComingSoonScreen
+          title="Reports"
+          description="Only the owner can view financial reports."
+          backHref="/owner"
+        />
+      );
+    }
+
+    return <ReportsScreen />;
+  }
+
+  if (action === 'settings') {
+    if (!profile || profile.role !== 'OWNER') {
+      return (
+        <ComingSoonScreen
+          title="Settings"
+          description="Only the owner can view application settings."
+          backHref="/owner"
+        />
+      );
+    }
+
+    return <SettingsScreen />;
   }
 
   const title = action && isOwnerAction(action) ? OWNER_ACTIONS[action] : 'Coming soon';

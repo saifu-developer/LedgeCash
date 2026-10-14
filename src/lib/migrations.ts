@@ -1,4 +1,4 @@
-export const CURRENT_DATABASE_VERSION = 2;
+export const CURRENT_DATABASE_VERSION = 3;
 export const DEMO_SHOP_ID = 'LC-DEMO01';
 export const DEMO_OWNER_ID = 'owner-irfan-ali';
 
@@ -208,7 +208,38 @@ export async function migrateToV2(
   });
 }
 
-export async function initializeFreshV2(db: SqliteDb): Promise<void> {
+export async function migrateToV3(db: SqliteDb): Promise<void> {
+  await db.withTransactionAsync(async () => {
+    // 1. Add sync columns to transactions if not existing
+    const txCols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(transactions);');
+    const hasSyncStatus = txCols.some((col) => col.name === 'syncStatus');
+    if (!hasSyncStatus) {
+      await db.execAsync("ALTER TABLE transactions ADD COLUMN syncStatus TEXT DEFAULT 'SYNCED';");
+    }
+
+    const hasUpdatedAt = txCols.some((col) => col.name === 'updatedAt');
+    if (!hasUpdatedAt) {
+      await db.execAsync('ALTER TABLE transactions ADD COLUMN updatedAt TEXT;');
+    }
+
+    const hasIsDeleted = txCols.some((col) => col.name === 'isDeleted');
+    if (!hasIsDeleted) {
+      await db.execAsync('ALTER TABLE transactions ADD COLUMN isDeleted INTEGER DEFAULT 0;');
+    }
+
+    // 2. Create sync_meta table
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS sync_meta (
+        key TEXT PRIMARY KEY NOT NULL,
+        value TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_transactions_sync ON transactions (shopId, syncStatus);
+      PRAGMA user_version = 3;
+    `);
+  });
+}
+
+export async function initializeFreshV3(db: SqliteDb): Promise<void> {
   await db.withTransactionAsync(async () => {
     await db.execAsync(`
       CREATE TABLE IF NOT EXISTS shops (
@@ -228,11 +259,15 @@ export async function initializeFreshV2(db: SqliteDb): Promise<void> {
         createdById TEXT NOT NULL,
         createdByName TEXT NOT NULL,
         category TEXT,
-        description TEXT
+        description TEXT,
+        syncStatus TEXT DEFAULT 'SYNCED',
+        updatedAt TEXT,
+        isDeleted INTEGER DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS idx_transactions_createdAt ON transactions (createdAt DESC);
       CREATE INDEX IF NOT EXISTS idx_transactions_shopId ON transactions (shopId);
       CREATE INDEX IF NOT EXISTS idx_transactions_shop_created ON transactions (shopId, createdAt DESC);
+      CREATE INDEX IF NOT EXISTS idx_transactions_sync ON transactions (shopId, syncStatus);
 
       CREATE TABLE IF NOT EXISTS audit (
         id TEXT PRIMARY KEY NOT NULL,
@@ -255,7 +290,12 @@ export async function initializeFreshV2(db: SqliteDb): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_audit_shopId ON audit (shopId);
       CREATE INDEX IF NOT EXISTS idx_audit_shop_created ON audit (shopId, createdAt DESC);
 
-      PRAGMA user_version = 2;
+      CREATE TABLE IF NOT EXISTS sync_meta (
+        key TEXT PRIMARY KEY NOT NULL,
+        value TEXT
+      );
+
+      PRAGMA user_version = 3;
     `);
   });
 }
@@ -264,22 +304,27 @@ export async function runMigrations(
   db: SqliteDb,
   userStorage?: UserStorage
 ): Promise<void> {
-  const version = await getDatabaseVersion(db);
+  let version = await getDatabaseVersion(db);
 
   if (version === 0) {
     const txTable = await db.getFirstAsync<{ name: string }>(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='transactions';"
     );
     if (!txTable) {
-      await initializeFreshV2(db);
+      await initializeFreshV3(db);
       return;
     }
     await migrateToV2(db, userStorage);
-    return;
+    version = 2;
   }
 
   if (version === 1) {
     await migrateToV2(db, userStorage);
+    version = 2;
+  }
+
+  if (version === 2) {
+    await migrateToV3(db);
     return;
   }
 

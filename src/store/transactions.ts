@@ -11,8 +11,9 @@ import {
   subscribeToSession,
 } from '@/session/current-profile';
 import { recordAudit } from '@/store/audit';
+import { refreshPendingCount, triggerSync } from '@/lib/sync-service';
 import type { Profile } from '@/types/profile';
-import type { ExpenseCategory, Transaction, TransactionType } from '@/types/transaction';
+import type { ExpenseCategory, SyncStatus, Transaction, TransactionType } from '@/types/transaction';
 
 type Listener = () => void;
 
@@ -215,21 +216,19 @@ function getSnapshot(): TransactionSnapshot {
   return cachedSnapshot;
 }
 
-function resolveAuthorizedShop(requestedShopId?: string): string {
+function resolveAuthorizedShop(requestedShopId?: string): string | null {
   const profile = getCurrentProfile();
   if (!profile) {
-    throw new Error('Authentication required: No profile is currently logged in.');
+    return null;
   }
 
   const shopId = requestedShopId ?? getActiveShopId();
   if (!shopId) {
-    throw new Error('No active shop selected.');
+    return null;
   }
 
   if (!isAuthorizedForShop(profile, shopId)) {
-    throw new Error(
-      `Access denied: Profile "${profile.name}" (${profile.role}) is not authorized for shop "${shopId}".`
-    );
+    return null;
   }
 
   return shopId;
@@ -240,7 +239,7 @@ export function reloadPersistedTransactions() {
   return loadPersistedTransactions();
 }
 
-async function seedDemoDataIfEmpty(db: any) {
+export async function seedDemoDataIfEmpty(db: any) {
   const countRow = (await db.getFirstAsync(
     'SELECT COUNT(*) as count FROM transactions'
   )) as { count: number } | null;
@@ -279,7 +278,7 @@ export function loadPersistedTransactions(): Promise<void> {
       const db = await getDb();
 
       const rows = await db.getAllAsync<any>(
-        'SELECT id, shopId, type, amount, createdAt, createdById, createdByName, category, description FROM transactions ORDER BY createdAt DESC'
+        'SELECT id, shopId, type, amount, createdAt, createdById, createdByName, category, description, syncStatus, updatedAt, isDeleted FROM transactions WHERE (isDeleted IS NULL OR isDeleted = 0) ORDER BY createdAt DESC'
       );
 
       let items: Transaction[] = [];
@@ -293,12 +292,16 @@ export function loadPersistedTransactions(): Promise<void> {
           createdBy: { id: row.createdById, name: row.createdByName },
           ...(row.category ? { category: row.category } : {}),
           ...(row.description ? { description: row.description } : {}),
+          syncStatus: (row.syncStatus as SyncStatus) || 'SYNCED',
+          updatedAt: row.updatedAt || row.createdAt,
+          isDeleted: row.isDeleted === 1,
         }));
       }
 
       allTransactions = items;
       isHydrated = true;
       updateSnapshotAndEmit();
+      refreshPendingCount().catch(() => {});
     } catch (e) {
       console.error('Failed to load transactions:', e);
       allTransactions = [];
@@ -349,6 +352,9 @@ export async function addTransaction(input: AddTransactionInput): Promise<Transa
   }
 
   const authorizedShopId = resolveAuthorizedShop(input.shopId);
+  if (!authorizedShopId) {
+    throw new Error('Access denied: Unauthorized shop selection.');
+  }
 
   if (input.type === 'CASH_OUT') {
     if (session.role !== 'OWNER') {
@@ -361,23 +367,27 @@ export async function addTransaction(input: AddTransactionInput): Promise<Transa
   }
 
   const description = input.description?.trim();
+  const nowIso = new Date().toISOString();
   const transaction: Transaction = {
     id: createId(),
     shopId: authorizedShopId,
     type: input.type,
     amount: input.amount,
-    createdAt: new Date().toISOString(),
+    createdAt: nowIso,
     createdBy: {
       id: input.createdBy.id,
       name: input.createdBy.name,
     },
     ...(input.type === 'CASH_OUT' ? { category: input.category } : {}),
     ...(description ? { description } : {}),
+    syncStatus: 'PENDING_INSERT',
+    updatedAt: nowIso,
+    isDeleted: false,
   };
 
   const db = await getDb();
   await db.runAsync(
-    'INSERT INTO transactions (id, shopId, type, amount, createdAt, createdById, createdByName, category, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO transactions (id, shopId, type, amount, createdAt, createdById, createdByName, category, description, syncStatus, updatedAt, isDeleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [
       transaction.id,
       transaction.shopId,
@@ -388,12 +398,16 @@ export async function addTransaction(input: AddTransactionInput): Promise<Transa
       transaction.createdBy.name,
       transaction.category || null,
       transaction.description || null,
+      'PENDING_INSERT',
+      transaction.updatedAt || null,
+      0,
     ]
   );
 
   allTransactions = [transaction, ...allTransactions];
   rawNotice = `${transactionTypeLabel(transaction.type)} of ${formatInr(transaction.amount)} added`;
   updateSnapshotAndEmit();
+  triggerSync();
 
   return transaction;
 }
@@ -431,12 +445,12 @@ export async function editTransaction(
     return existing;
   }
 
+  const nowIso = new Date().toISOString();
   const db = await getDb();
-  await db.runAsync('UPDATE transactions SET amount = ? WHERE id = ? AND shopId = ?', [
-    input.amount,
-    existing.id,
-    existing.shopId,
-  ]);
+  await db.runAsync(
+    "UPDATE transactions SET amount = ?, syncStatus = CASE WHEN syncStatus = 'PENDING_INSERT' THEN 'PENDING_INSERT' ELSE 'PENDING_UPDATE' END, updatedAt = ? WHERE id = ? AND shopId = ?",
+    [input.amount, nowIso, existing.id, existing.shopId]
+  );
 
   await recordAudit({
     shopId: existing.shopId,
@@ -457,11 +471,14 @@ export async function editTransaction(
   const next: Transaction = {
     ...existing,
     amount: input.amount,
+    updatedAt: nowIso,
+    syncStatus: existing.syncStatus === 'PENDING_INSERT' ? 'PENDING_INSERT' : 'PENDING_UPDATE',
   };
 
   allTransactions = allTransactions.map((item) => (item.id === id ? next : item));
   rawNotice = `${transactionTypeLabel(next.type)} updated to ${formatInr(next.amount)}`;
   updateSnapshotAndEmit();
+  triggerSync();
 
   return next;
 }
@@ -474,11 +491,20 @@ export async function deleteTransaction(id: string): Promise<void> {
     throw new Error('Access denied: You do not own the shop this transaction belongs to.');
   }
 
+  const nowIso = new Date().toISOString();
   const db = await getDb();
-  await db.runAsync('DELETE FROM transactions WHERE id = ? AND shopId = ?', [
-    id,
-    existing.shopId,
-  ]);
+
+  if (existing.syncStatus === 'PENDING_INSERT') {
+    await db.runAsync('DELETE FROM transactions WHERE id = ? AND shopId = ?', [
+      id,
+      existing.shopId,
+    ]);
+  } else {
+    await db.runAsync(
+      "UPDATE transactions SET isDeleted = 1, syncStatus = 'PENDING_DELETE', updatedAt = ? WHERE id = ? AND shopId = ?",
+      [nowIso, id, existing.shopId]
+    );
+  }
 
   await recordAudit({
     shopId: existing.shopId,
@@ -499,10 +525,14 @@ export async function deleteTransaction(id: string): Promise<void> {
   allTransactions = allTransactions.filter((item) => item.id !== id);
   rawNotice = `${transactionTypeLabel(existing.type)} of ${formatInr(existing.amount)} deleted`;
   updateSnapshotAndEmit();
+  triggerSync();
 }
 
 export function getTransactions(shopId?: string): Transaction[] {
   const authorizedShopId = resolveAuthorizedShop(shopId);
+  if (!authorizedShopId) {
+    return [];
+  }
   return sortByNewest(allTransactions.filter((transaction) => transaction.shopId === authorizedShopId));
 }
 
@@ -557,6 +587,16 @@ export function clearSuccessNotice() {
 
 export function useTransactionStore(): TransactionSnapshot {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+export async function resetTransactionStore(): Promise<void> {
+  loadPromise = null;
+  const db = await getDb();
+  await db.runAsync('DELETE FROM transactions');
+  allTransactions = [];
+  rawNotice = null;
+  isHydrated = true;
+  updateSnapshotAndEmit();
 }
 
 export function _resetTransactionStoreForTesting(): void {

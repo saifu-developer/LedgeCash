@@ -2,7 +2,7 @@ import { Image } from 'expo-image';
 import * as SplashScreen from 'expo-splash-screen';
 import { useState } from 'react';
 import { Dimensions, StyleSheet, Text, View } from 'react-native';
-import Animated, { Easing, Keyframe, FadeIn, FadeOut } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 
 import { BrandColors } from '@/constants/theme';

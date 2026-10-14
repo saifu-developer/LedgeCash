@@ -66,21 +66,19 @@ function getSnapshot(): AuditSnapshot {
   return cachedSnapshot;
 }
 
-function resolveAuthorizedShop(requestedShopId?: string): string {
+function resolveAuthorizedShop(requestedShopId?: string): string | null {
   const profile = getCurrentProfile();
   if (!profile) {
-    throw new Error('Authentication required: No profile is currently logged in.');
+    return null;
   }
 
   const shopId = requestedShopId ?? getActiveShopId();
   if (!shopId) {
-    throw new Error('No active shop selected.');
+    return null;
   }
 
   if (!isAuthorizedForShop(profile, shopId)) {
-    throw new Error(
-      `Access denied: Profile "${profile.name}" (${profile.role}) is not authorized for shop "${shopId}".`
-    );
+    return null;
   }
 
   return shopId;
@@ -204,6 +202,9 @@ export async function recordAudit(input: RecordAuditInput): Promise<AuditEntry> 
 
 export function getAuditEntries(shopId?: string): AuditEntry[] {
   const authorizedShopId = resolveAuthorizedShop(shopId);
+  if (!authorizedShopId) {
+    return [];
+  }
   return sortByNewest(allAuditEntries.filter((entry) => entry.shopId === authorizedShopId));
 }
 
@@ -216,6 +217,15 @@ export function getAuditEntriesByTransaction(
 
 export function useAuditStore(): AuditSnapshot {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+export async function resetAuditStore(): Promise<void> {
+  loadPromise = null;
+  const db = await getDb();
+  await db.runAsync('DELETE FROM audit');
+  allAuditEntries = [];
+  isHydrated = true;
+  updateSnapshotAndEmit();
 }
 
 export function _resetAuditStoreForTesting(): void {

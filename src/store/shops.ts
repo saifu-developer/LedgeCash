@@ -85,7 +85,7 @@ export async function generateUniqueShopId(): Promise<string> {
   throw new Error('Failed to generate unique shop ID after 100 attempts.');
 }
 
-export async function createShop(ownerId: string, name: string): Promise<Shop> {
+export async function createShop(ownerId: string, name: string, customShopId?: string): Promise<Shop> {
   const trimmedName = name.trim();
   if (!trimmedName) {
     throw new Error('Shop name is required.');
@@ -94,7 +94,7 @@ export async function createShop(ownerId: string, name: string): Promise<Shop> {
     throw new Error('Owner ID is required.');
   }
 
-  const id = await generateUniqueShopId();
+  const id = customShopId || (await generateUniqueShopId());
   const shop: Shop = {
     id,
     name: trimmedName,
@@ -104,7 +104,7 @@ export async function createShop(ownerId: string, name: string): Promise<Shop> {
 
   const db = await getDb();
   await db.runAsync(
-    'INSERT INTO shops (id, name, ownerId, createdAt) VALUES (?, ?, ?, ?)',
+    'INSERT OR REPLACE INTO shops (id, name, ownerId, createdAt) VALUES (?, ?, ?, ?)',
     [shop.id, shop.name, shop.ownerId, shop.createdAt]
   );
 
@@ -163,6 +163,16 @@ export async function updateShop(
 
 export function useShopStore(): ShopSnapshot {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+export async function resetShopStore(): Promise<void> {
+  loadPromise = null;
+  const db = await getDb();
+  await db.runAsync('DELETE FROM shops');
+  emit({
+    items: [],
+    hydrated: true,
+  });
 }
 
 export function _resetShopStoreForTesting(): void {

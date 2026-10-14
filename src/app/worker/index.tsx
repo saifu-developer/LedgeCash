@@ -6,6 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { BrandColors } from '@/constants/theme';
 import { StatCard } from '@/components/dashboard/stat-card';
 import { TransactionRow } from '@/components/dashboard/transaction-row';
+import { SyncStatusBadge } from '@/components/ui/SyncStatusBadge';
 import { formatInr } from '@/lib/money';
 import { transactionTone } from '@/lib/transactions';
 import { useCurrentProfile } from '@/session/current-profile';
@@ -20,6 +21,12 @@ export default function WorkerHomeScreen() {
   const router = useRouter();
   const profile = useCurrentProfile();
   const { notice } = useTransactionStore();
+
+  useEffect(() => {
+    if (!profile) {
+      router.replace('/');
+    }
+  }, [profile, router]);
 
   useEffect(() => {
     if (!notice) {
@@ -44,11 +51,14 @@ export default function WorkerHomeScreen() {
     <SafeAreaView style={styles.safeArea}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
-          <Image 
-            source={require('@/assets/images/logo-compact.png')} 
-            style={styles.headerLogo} 
-            resizeMode="contain" 
-          />
+          <View style={styles.headerRow}>
+            <Image 
+              source={require('@/assets/images/logo-compact.png')} 
+              style={styles.headerLogo} 
+              resizeMode="contain" 
+            />
+            <SyncStatusBadge />
+          </View>
           <Text style={styles.name}>{profile.name}</Text>
         </View>
 
@@ -157,6 +167,11 @@ const styles = StyleSheet.create({
   },
   header: {
     marginBottom: 20,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   headerLogo: {
     width: 140,

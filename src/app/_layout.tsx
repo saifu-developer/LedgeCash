@@ -8,6 +8,7 @@ import { loadPersistedShops, useShopStore } from '@/store/shops';
 import { loadPersistedUsers, useUserStore } from '@/store/users';
 import { loadPersistedTransactions, useTransactionStore } from '@/store/transactions';
 import { loadPersistedAudit, useAuditStore } from '@/store/audit';
+import { initSyncEngine, triggerSync } from '@/lib/sync-service';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -21,12 +22,17 @@ export default function RootLayout() {
   const isHydrated = shopsHydrated && usersHydrated && txHydrated && auditHydrated;
 
   useEffect(() => {
+    const cleanupSync = initSyncEngine();
     void (async () => {
       await loadPersistedShops();
       await loadPersistedUsers();
       await loadPersistedTransactions();
       await loadPersistedAudit();
+      triggerSync(1200);
     })();
+    return () => {
+      cleanupSync();
+    };
   }, []);
 
   return (

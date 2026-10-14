@@ -13,11 +13,13 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { getActiveShopId, getCurrentProfile } from '@/session/current-profile';
-import { addWorker, isValidPin } from '@/store/users';
+import { isValidPin } from '@/store/users';
+import { createWorkerWithCloud } from '@/lib/auth-service';
 
 export function AddWorkerScreen() {
   const session = getCurrentProfile();
   const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
   const [pin, setPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -41,6 +43,7 @@ export function AddWorkerScreen() {
     }
 
     const trimmedName = name.trim();
+    const trimmedPhone = phone.trim() || `9${Date.now().toString().slice(-9)}`;
     if (!trimmedName) {
       setError('Enter a worker name.');
       return;
@@ -66,8 +69,9 @@ export function AddWorkerScreen() {
     setSubmitting(true);
 
     try {
-      await addWorker({ name: trimmedName, pin, shopId: activeShopId });
+      await createWorkerWithCloud({ name: trimmedName, phone: trimmedPhone, pin });
       setName('');
+      setPhone('');
       setPin('');
       setConfirmPin('');
       router.replace({
@@ -120,6 +124,23 @@ export function AddWorkerScreen() {
               style={styles.input}
               editable={!submitting}
               autoCapitalize="words"
+            />
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.label}>Mobile Number</Text>
+            <TextInput
+              value={phone}
+              onChangeText={(value) => {
+                setError(null);
+                setPhone(value.replace(/\D/g, '').slice(0, 10));
+              }}
+              placeholder="10-digit mobile number"
+              placeholderTextColor="#B0B0AA"
+              style={styles.input}
+              keyboardType="phone-pad"
+              maxLength={10}
+              editable={!submitting}
             />
           </View>
 

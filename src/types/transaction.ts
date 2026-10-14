@@ -12,6 +12,8 @@ export const EXPENSE_CATEGORIES = [
 
 export type ExpenseCategory = (typeof EXPENSE_CATEGORIES)[number];
 
+export type SyncStatus = 'PENDING_INSERT' | 'PENDING_UPDATE' | 'PENDING_DELETE' | 'SYNCED';
+
 export type Transaction = {
   id: string;
   shopId: string;
@@ -24,6 +26,9 @@ export type Transaction = {
   createdAt: string;
   category?: ExpenseCategory;
   description?: string;
+  syncStatus?: SyncStatus;
+  updatedAt?: string;
+  isDeleted?: boolean | number;
 };
 
 export type DailyOverview = {
