@@ -87,7 +87,7 @@ export function PaymentEntryScreen({ type, title }: PaymentEntryScreenProps) {
           </Pressable>
 
           <Image 
-            source={require('@/assets/images/logo-compact.png')} 
+            source={require('@/assets/logo_icon.png')} 
             style={styles.kickerLogo} 
             resizeMode="contain" 
           />
@@ -156,9 +156,9 @@ const styles = StyleSheet.create({
     color: BrandColors.navy,
   },
   kickerLogo: {
-    marginTop: 16,
-    width: 120,
-    height: 36,
+    marginTop: 12,
+    width: 34,
+    height: 34,
   },
   title: {
     marginTop: 10,

@@ -377,6 +377,14 @@ export function useUserStore(): UserSnapshot {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
+export async function removeWorkersForShop(shopId: string): Promise<void> {
+  const remaining = snapshot.items.filter((u) => u.shopId !== shopId);
+  await commit({
+    ...snapshot,
+    items: remaining,
+  });
+}
+
 export async function resetUserStore(): Promise<void> {
   loadPromise = null;
   await AsyncStorage.removeItem(STORAGE_KEY);

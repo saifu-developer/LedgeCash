@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import {
@@ -11,6 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AppCard } from '@/components/ui/AppCard';
 import { ResetConfirmModal } from '@/components/ui/ResetConfirmModal';
 import { BrandColors } from '@/constants/theme';
 import { resetAllAppData } from '@/lib/reset-app';
@@ -27,13 +29,11 @@ export default function WelcomeScreen() {
 
   function handleOwnerCardPress() {
     if (owner) {
-      // Direct navigation to PIN screen for existing owner
       router.push({
         pathname: '/pin',
         params: { profileId: owner.id },
       });
     } else {
-      // First-time owner onboarding
       router.push('/owner-setup');
     }
   }
@@ -66,26 +66,28 @@ export default function WelcomeScreen() {
         <View style={styles.heroSection}>
           <View style={styles.logoBadgeContainer}>
             <Image
-              source={require('@/assets/images/logo-icon.png')}
-              style={styles.logoIcon}
+              source={require('@/assets/logo_full.png')}
+              style={styles.logoImage}
               resizeMode="contain"
             />
           </View>
-          <Text style={styles.brandTitle}>LedgeCash</Text>
           <Text style={styles.brandSubtitle}>
             Smart Multi-User Cash & Expense Management
           </Text>
 
-          {/* Fintech Value Badges */}
+          {/* Fintech Value Badges with Vector Icons */}
           <View style={styles.badgeRow}>
             <View style={styles.pillBadge}>
-              <Text style={styles.pillText}>⚡ Offline-First</Text>
+              <Ionicons name="flash-outline" size={13} color="#E5E7EB" style={styles.badgeIcon} />
+              <Text style={styles.pillText}>Offline-First</Text>
             </View>
             <View style={styles.pillBadge}>
-              <Text style={styles.pillText}>🏪 Multi-Shop</Text>
+              <Ionicons name="storefront-outline" size={13} color="#E5E7EB" style={styles.badgeIcon} />
+              <Text style={styles.pillText}>Multi-Shop</Text>
             </View>
             <View style={styles.pillBadge}>
-              <Text style={styles.pillText}>🔒 Multi-User PIN</Text>
+              <Ionicons name="shield-checkmark-outline" size={13} color="#E5E7EB" style={styles.badgeIcon} />
+              <Text style={styles.pillText}>Multi-User PIN</Text>
             </View>
           </View>
         </View>
@@ -96,12 +98,13 @@ export default function WelcomeScreen() {
 
           {resetSuccessNotice ? (
             <View style={styles.noticeBanner}>
-              <Text style={styles.noticeText}>✓ {resetSuccessNotice}</Text>
+              <Ionicons name="checkmark-circle" size={16} color="#065F46" />
+              <Text style={styles.noticeText}>{resetSuccessNotice}</Text>
             </View>
           ) : null}
 
           {/* Business Owner Card */}
-          <Pressable
+          <AppCard
             accessibilityRole="button"
             accessibilityLabel={
               owner
@@ -109,13 +112,9 @@ export default function WelcomeScreen() {
                 : 'Business Owner, set up master account'
             }
             onPress={handleOwnerCardPress}
-            style={({ pressed }) => [
-              styles.portalCard,
-              styles.ownerCardBorder,
-              pressed && styles.cardPressed,
-            ]}>
+            style={styles.portalCard}>
             <View style={[styles.iconBox, styles.ownerIconBox]}>
-              <Text style={styles.portalIcon}>🏪</Text>
+              <Ionicons name="storefront" size={24} color={BrandColors.navy} />
             </View>
 
             <View style={styles.portalContent}>
@@ -144,20 +143,16 @@ export default function WelcomeScreen() {
                 </Text>
               </View>
             </View>
-          </Pressable>
+          </AppCard>
 
           {/* Staff / Worker Card */}
-          <Pressable
+          <AppCard
             accessibilityRole="button"
             accessibilityLabel="Staff or Worker, log daily cash and UPI collections"
             onPress={handleWorkerCardPress}
-            style={({ pressed }) => [
-              styles.portalCard,
-              styles.workerCardBorder,
-              pressed && styles.cardPressed,
-            ]}>
+            style={styles.portalCard}>
             <View style={[styles.iconBox, styles.workerIconBox]}>
-              <Text style={styles.portalIcon}>🧑‍💼</Text>
+              <Ionicons name="person" size={24} color={BrandColors.green} />
             </View>
 
             <View style={styles.portalContent}>
@@ -178,7 +173,7 @@ export default function WelcomeScreen() {
                 </Text>
               </View>
             </View>
-          </Pressable>
+          </AppCard>
         </View>
 
         {/* Developer Reset Section (Visible in DEV mode) */}
@@ -190,9 +185,9 @@ export default function WelcomeScreen() {
               onPress={() => setDevResetModalVisible(true)}
               style={({ pressed }) => [
                 styles.devResetButton,
-                pressed && styles.cardPressed,
+                pressed && styles.pressed,
               ]}>
-              <Text style={styles.devResetIcon}>⚙️</Text>
+              <Ionicons name="construct-outline" size={15} color="#B91C1C" />
               <Text style={styles.devResetText}>
                 Dev Mode: Reset All App State & Database
               </Text>
@@ -227,10 +222,10 @@ const styles = StyleSheet.create({
   heroSection: {
     backgroundColor: BrandColors.navy,
     paddingHorizontal: 24,
-    paddingTop: Platform.OS === 'ios' ? 24 : 40,
-    paddingBottom: 40,
-    borderBottomLeftRadius: 32,
-    borderBottomRightRadius: 32,
+    paddingTop: Platform.OS === 'ios' ? 24 : 36,
+    paddingBottom: 32,
+    borderBottomLeftRadius: 28,
+    borderBottomRightRadius: 28,
     alignItems: 'center',
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 6 },
@@ -239,34 +234,22 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   logoBadgeContainer: {
-    width: 72,
-    height: 72,
-    borderRadius: 22,
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    backgroundColor: 'transparent',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 16,
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.25)',
+    marginBottom: 10,
   },
-  logoIcon: {
-    width: 48,
-    height: 48,
-  },
-  brandTitle: {
-    fontSize: 32,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    letterSpacing: -0.5,
-    marginBottom: 8,
+  logoImage: {
+    width: 190,
+    height: 50,
   },
   brandSubtitle: {
-    fontSize: 15,
-    lineHeight: 22,
+    fontSize: 14,
+    lineHeight: 20,
     color: '#D1D5DB',
     textAlign: 'center',
     paddingHorizontal: 16,
-    marginBottom: 20,
+    marginBottom: 18,
   },
   badgeRow: {
     flexDirection: 'row',
@@ -275,21 +258,26 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   pillBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: 'rgba(255, 255, 255, 0.1)',
     borderRadius: 20,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.15)',
   },
+  badgeIcon: {
+    marginRight: 4,
+  },
   pillText: {
     color: '#E5E7EB',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
   },
   cardsContainer: {
     paddingHorizontal: 20,
-    paddingTop: 32,
+    paddingTop: 28,
     gap: 16,
   },
   sectionHeading: {
@@ -301,56 +289,41 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   noticeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     backgroundColor: '#ECFDF5',
     borderWidth: 1,
     borderColor: '#A7F3D0',
     borderRadius: 14,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     marginBottom: 8,
   },
   noticeText: {
     fontSize: 13,
     fontWeight: '600',
     color: '#065F46',
-    textAlign: 'center',
+    flex: 1,
   },
   portalCard: {
     flexDirection: 'row',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 22,
-    padding: 20,
     alignItems: 'center',
-    shadowColor: '#062650',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 3,
-  },
-  ownerCardBorder: {
-    borderWidth: 1.5,
-    borderColor: '#E2E8F0',
-  },
-  workerCardBorder: {
-    borderWidth: 1.5,
-    borderColor: '#E2E8F0',
+    padding: 18,
   },
   iconBox: {
-    width: 60,
-    height: 60,
-    borderRadius: 18,
+    width: 52,
+    height: 52,
+    borderRadius: 14,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 16,
+    marginRight: 14,
   },
   ownerIconBox: {
     backgroundColor: '#EEF2F6',
   },
   workerIconBox: {
     backgroundColor: '#ECFDF5',
-  },
-  portalIcon: {
-    fontSize: 28,
   },
   portalContent: {
     flex: 1,
@@ -362,7 +335,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   portalTitle: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '700',
     color: BrandColors.navy,
   },
@@ -420,12 +393,8 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: BrandColors.green,
   },
-  cardPressed: {
-    opacity: 0.88,
-    transform: [{ scale: 0.985 }],
-  },
   devSection: {
-    marginTop: 36,
+    marginTop: 28,
     paddingHorizontal: 20,
     alignItems: 'center',
   },
@@ -440,12 +409,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#FECACA',
   },
-  devResetIcon: {
-    fontSize: 14,
-  },
   devResetText: {
     fontSize: 12,
     fontWeight: '700',
     color: '#B91C1C',
+  },
+  pressed: {
+    opacity: 0.88,
+    transform: [{ scale: 0.985 }],
   },
 });

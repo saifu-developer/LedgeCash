@@ -161,6 +161,21 @@ export async function updateShop(
   return updated;
 }
 
+export async function deleteShop(shopId: string): Promise<void> {
+  const db = await getDb();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync('DELETE FROM transactions WHERE shopId = ?', [shopId]);
+    await db.runAsync('DELETE FROM audit WHERE shopId = ?', [shopId]);
+    await db.runAsync('DELETE FROM users WHERE shopId = ?', [shopId]);
+    await db.runAsync('DELETE FROM shops WHERE id = ?', [shopId]);
+  });
+
+  emit({
+    items: snapshot.items.filter((s) => s.id !== shopId),
+    hydrated: snapshot.hydrated,
+  });
+}
+
 export function useShopStore(): ShopSnapshot {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }

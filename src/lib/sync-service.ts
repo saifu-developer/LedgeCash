@@ -4,36 +4,17 @@ import { useSyncExternalStore } from 'react';
 import { apiClient, getAuthToken } from '@/lib/api-client';
 import { getDb } from '@/lib/db';
 import { getActiveShopId } from '@/session/current-profile';
-import { reloadPersistedTransactions } from '@/store/transactions';
 import type { SyncStatus, TransactionType } from '@/types/transaction';
+import type { SyncBatchResponse, SyncState } from '@/types/sync';
 
-export type SyncState = {
-  isOnline: boolean;
-  isSyncing: boolean;
-  pendingCount: number;
-  lastSyncedAt: string | null;
-  error: string | null;
-};
+export type { SyncState };
 
-type ServerTransaction = {
-  id: string;
-  shopId: string;
-  type: TransactionType;
-  amount: number;
-  category?: string;
-  description?: string;
-  createdById: string;
-  createdByName: string;
-  createdAt: string;
-  updatedAt?: string;
-  deleted?: boolean;
-};
+type SyncCompleteCallback = () => Promise<void> | void;
+let onSyncCompleteCallback: SyncCompleteCallback | null = null;
 
-type SyncBatchResponse = {
-  syncedCount: number;
-  serverChanges: ServerTransaction[];
-  syncTimestamp: string;
-};
+export function registerSyncCompleteCallback(cb: SyncCompleteCallback): void {
+  onSyncCompleteCallback = cb;
+}
 
 type Listener = () => void;
 const listeners = new Set<Listener>();
@@ -262,7 +243,9 @@ export async function syncNow(): Promise<boolean> {
         error: null,
       });
 
-      await reloadPersistedTransactions();
+      if (onSyncCompleteCallback) {
+        await onSyncCompleteCallback();
+      }
       return true;
     } catch (err: any) {
       console.warn('Sync failed:', err?.message || err);

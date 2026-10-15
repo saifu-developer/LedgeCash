@@ -11,7 +11,11 @@ import {
   subscribeToSession,
 } from '@/session/current-profile';
 import { recordAudit } from '@/store/audit';
-import { refreshPendingCount, triggerSync } from '@/lib/sync-service';
+import {
+  refreshPendingCount,
+  registerSyncCompleteCallback,
+  triggerSync,
+} from '@/lib/sync-service';
 import type { Profile } from '@/types/profile';
 import type { ExpenseCategory, SyncStatus, Transaction, TransactionType } from '@/types/transaction';
 
@@ -238,6 +242,8 @@ export function reloadPersistedTransactions() {
   loadPromise = null;
   return loadPersistedTransactions();
 }
+
+registerSyncCompleteCallback(reloadPersistedTransactions);
 
 export async function seedDemoDataIfEmpty(db: any) {
   const countRow = (await db.getFirstAsync(

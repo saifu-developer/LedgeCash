@@ -5,6 +5,7 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -14,6 +15,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 
 import { BrandColors } from '@/constants/theme';
 import { exportDatabaseBackupJson } from '@/lib/export-utils';
@@ -24,10 +26,10 @@ import {
   useActiveShop,
   useCurrentProfile,
 } from '@/session/current-profile';
-import { useAuditStore } from '@/store/audit';
-import { createShop, getShopsByOwner, updateShop, useShopStore } from '@/store/shops';
-import { useTransactionStore } from '@/store/transactions';
-import { changeOwnerPin, isValidPin } from '@/store/users';
+import { reloadPersistedAudit, useAuditStore } from '@/store/audit';
+import { createShop, deleteShop, getShopsByOwner, updateShop, useShopStore } from '@/store/shops';
+import { reloadPersistedTransactions, useTransactionStore } from '@/store/transactions';
+import { changeOwnerPin, isValidPin, removeWorkersForShop } from '@/store/users';
 import type { Shop } from '@/types/shop';
 
 export function SettingsScreen() {
@@ -75,11 +77,53 @@ export function SettingsScreen() {
   // Backup Export State
   const [exportingBackup, setExportingBackup] = useState(false);
 
+  // Delete Shop State
+  const [deleteShopModalVisible, setDeleteShopModalVisible] = useState(false);
+  const [deleteShopLoading, setDeleteShopLoading] = useState(false);
+  const [deleteShopConfirmInput, setDeleteShopConfirmInput] = useState('');
+  const [deleteShopError, setDeleteShopError] = useState<string | null>(null);
+
   function triggerNotice(msg: string) {
     setNotice(msg);
     setTimeout(() => {
       setNotice(null);
     }, 3500);
+  }
+
+  async function handleConfirmDeleteShop() {
+    if (!activeShop || !profile) return;
+    if (deleteShopConfirmInput.trim().toLowerCase() !== activeShop.name.trim().toLowerCase()) {
+      setDeleteShopError(`Please type "${activeShop.name}" exactly to confirm.`);
+      return;
+    }
+
+    setDeleteShopLoading(true);
+    setDeleteShopError(null);
+    try {
+      const shopIdToDelete = activeShop.id;
+      const shopNameToDelete = activeShop.name;
+      const remaining = ownedShops.filter((s) => s.id !== shopIdToDelete);
+
+      await deleteShop(shopIdToDelete);
+      await removeWorkersForShop(shopIdToDelete);
+      await reloadPersistedTransactions();
+      await reloadPersistedAudit();
+
+      setDeleteShopLoading(false);
+      setDeleteShopModalVisible(false);
+      setDeleteShopConfirmInput('');
+
+      if (remaining.length > 0) {
+        setActiveShopId(remaining[0].id);
+        triggerNotice(`Shop "${shopNameToDelete}" has been permanently deleted.`);
+      } else {
+        setActiveShopId(null);
+        router.replace('/shop-setup');
+      }
+    } catch (e) {
+      setDeleteShopLoading(false);
+      setDeleteShopError(e instanceof Error ? e.message : 'Failed to delete shop.');
+    }
   }
 
   async function handleCopyShopCode() {
@@ -556,8 +600,113 @@ export function SettingsScreen() {
               <Text style={styles.logoutButtonText}>Log Out from LedgeCash</Text>
             </Pressable>
           </View>
+
+          {/* Section 6: Danger Zone - Delete Shop */}
+          <Text style={[styles.sectionHeader, { color: '#B91C1C' }]}>Danger Zone</Text>
+          <View style={[styles.card, styles.dangerCard]}>
+            <View style={styles.dangerHeaderRow}>
+              <View style={styles.dangerIconBox}>
+                <Ionicons name="alert-circle" size={20} color="#DC2626" />
+              </View>
+              <View style={styles.dangerTitleCol}>
+                <Text style={styles.dangerTitle}>Delete Current Shop</Text>
+                <Text style={styles.dangerSub}>
+                  Permanently remove {activeShop?.name ?? 'this shop'} and all associated records.
+                </Text>
+              </View>
+            </View>
+
+            <Text style={styles.dangerWarningBody}>
+              This will permanently delete shop &ldquo;{activeShop?.name}&rdquo; ({activeShop?.id}), along with all transactions, worker associations, and audit trail records. This action cannot be reversed.
+            </Text>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Delete this shop"
+              onPress={() => {
+                setDeleteShopConfirmInput('');
+                setDeleteShopError(null);
+                setDeleteShopModalVisible(true);
+              }}
+              style={({ pressed }) => [styles.deleteShopBtn, pressed && styles.pressed]}>
+              <Ionicons name="trash-outline" size={16} color="#FFFFFF" />
+              <Text style={styles.deleteShopBtnText}>{`Delete "${activeShop?.name ?? 'Shop'}"`}</Text>
+            </Pressable>
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Delete Shop Confirmation Modal */}
+      <Modal
+        visible={deleteShopModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => !deleteShopLoading && setDeleteShopModalVisible(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.deleteModalCard}>
+            <View style={styles.deleteModalHeader}>
+              <View style={styles.deleteModalIconBox}>
+                <Ionicons name="trash" size={24} color="#DC2626" />
+              </View>
+              <Text style={styles.deleteModalTitle}>Delete {activeShop?.name}?</Text>
+              <Text style={styles.deleteModalSub}>
+                All financial transactions, worker accounts, and audit records under this shop will be permanently wiped.
+              </Text>
+            </View>
+
+            <View style={styles.deleteModalPrompt}>
+              <Text style={styles.deleteModalPromptLabel}>
+                Type <Text style={styles.boldText}>{activeShop?.name}</Text> to confirm:
+              </Text>
+              <TextInput
+                value={deleteShopConfirmInput}
+                onChangeText={(val) => {
+                  setDeleteShopError(null);
+                  setDeleteShopConfirmInput(val);
+                }}
+                placeholder={activeShop?.name ?? 'Shop Name'}
+                placeholderTextColor="#94A3B8"
+                style={styles.deleteModalInput}
+                editable={!deleteShopLoading}
+                autoCapitalize="none"
+              />
+              {deleteShopError ? (
+                <Text style={styles.deleteModalError}>{deleteShopError}</Text>
+              ) : null}
+            </View>
+
+            <View style={styles.deleteModalActions}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Cancel shop deletion"
+                disabled={deleteShopLoading}
+                onPress={() => setDeleteShopModalVisible(false)}
+                style={({ pressed }) => [
+                  styles.cancelDeleteBtn,
+                  pressed && styles.pressed,
+                ]}>
+                <Text style={styles.cancelDeleteBtnText}>Cancel</Text>
+              </Pressable>
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Confirm permanent shop deletion"
+                disabled={deleteShopLoading}
+                onPress={handleConfirmDeleteShop}
+                style={({ pressed }) => [
+                  styles.confirmDeleteBtn,
+                  (pressed || deleteShopLoading) && styles.pressed,
+                ]}>
+                {deleteShopLoading ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.confirmDeleteBtnText}>Permanently Delete</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -881,6 +1030,168 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     color: '#B54708',
+  },
+  dangerCard: {
+    borderColor: '#FEE2E2',
+    backgroundColor: '#FFFDFD',
+    borderWidth: 1.5,
+    marginBottom: 24,
+  },
+  dangerHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    marginBottom: 10,
+  },
+  dangerIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: '#FEF2F2',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dangerTitleCol: {
+    flex: 1,
+  },
+  dangerTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#DC2626',
+  },
+  dangerSub: {
+    fontSize: 13,
+    color: '#64748B',
+    marginTop: 2,
+    lineHeight: 18,
+  },
+  dangerWarningBody: {
+    fontSize: 13,
+    color: '#7F1D1D',
+    backgroundColor: '#FEF2F2',
+    padding: 12,
+    borderRadius: 10,
+    lineHeight: 18,
+    marginVertical: 12,
+  },
+  deleteShopBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#DC2626',
+    borderRadius: 12,
+    paddingVertical: 12,
+  },
+  deleteShopBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  deleteModalCard: {
+    width: '100%',
+    maxWidth: 400,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    padding: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.2,
+    shadowRadius: 20,
+    elevation: 8,
+  },
+  deleteModalHeader: {
+    alignItems: 'center',
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  deleteModalIconBox: {
+    width: 52,
+    height: 52,
+    borderRadius: 16,
+    backgroundColor: '#FEF2F2',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  deleteModalTitle: {
+    fontSize: 19,
+    fontWeight: '800',
+    color: '#0F172A',
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+  deleteModalSub: {
+    fontSize: 13,
+    color: '#64748B',
+    textAlign: 'center',
+    lineHeight: 19,
+  },
+  deleteModalPrompt: {
+    marginVertical: 14,
+  },
+  deleteModalPromptLabel: {
+    fontSize: 13,
+    color: '#334155',
+    marginBottom: 8,
+  },
+  boldText: {
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  deleteModalInput: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    color: '#0F172A',
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+  },
+  deleteModalError: {
+    fontSize: 12,
+    color: '#DC2626',
+    marginTop: 6,
+    fontWeight: '500',
+  },
+  deleteModalActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 12,
+  },
+  cancelDeleteBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cancelDeleteBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  confirmDeleteBtn: {
+    flex: 1.5,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: '#DC2626',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmDeleteBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   pressed: {
     opacity: 0.8,

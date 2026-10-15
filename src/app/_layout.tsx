@@ -3,12 +3,12 @@ import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
 import { useColorScheme, View } from 'react-native';
 
-import { AnimatedSplashOverlay } from '@/components/animated-icon';
-import { loadPersistedShops, useShopStore } from '@/store/shops';
-import { loadPersistedUsers, useUserStore } from '@/store/users';
-import { loadPersistedTransactions, useTransactionStore } from '@/store/transactions';
-import { loadPersistedAudit, useAuditStore } from '@/store/audit';
+import { BrandColors } from '@/constants/theme';
 import { initSyncEngine, triggerSync } from '@/lib/sync-service';
+import { loadPersistedAudit, useAuditStore } from '@/store/audit';
+import { loadPersistedShops, useShopStore } from '@/store/shops';
+import { loadPersistedTransactions, useTransactionStore } from '@/store/transactions';
+import { loadPersistedUsers, useUserStore } from '@/store/users';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -35,21 +35,24 @@ export default function RootLayout() {
     };
   }, []);
 
+  useEffect(() => {
+    if (isHydrated) {
+      SplashScreen.hideAsync();
+    }
+  }, [isHydrated]);
+
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       {isHydrated ? (
-        <>
-          <AnimatedSplashOverlay />
-          <Stack
-            screenOptions={{
-              headerShown: false,
-              animation: 'slide_from_right',
-              freezeOnBlur: false,
-            }}
-          />
-        </>
+        <Stack
+          screenOptions={{
+            headerShown: false,
+            animation: 'slide_from_right',
+            freezeOnBlur: false,
+          }}
+        />
       ) : (
-        <View style={{ flex: 1, backgroundColor: '#F7F7F5' }} />
+        <View style={{ flex: 1, backgroundColor: BrandColors.background }} />
       )}
     </ThemeProvider>
   );

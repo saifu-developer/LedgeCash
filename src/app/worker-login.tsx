@@ -124,7 +124,7 @@ export default function WorkerLoginScreen() {
 
           <View style={styles.header}>
             <Image
-              source={require('@/assets/images/logo-compact.png')}
+              source={require('@/assets/logo_full.png')}
               style={styles.headerLogo}
               resizeMode="contain"
             />

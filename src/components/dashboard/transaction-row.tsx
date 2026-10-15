@@ -1,3 +1,5 @@
+import { Ionicons } from '@expo/vector-icons';
+import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { formatDate, formatInr, formatTime } from '@/lib/money';
@@ -10,6 +12,16 @@ type TransactionRowProps = {
   showEnteredBy?: boolean;
   showDate?: boolean;
 };
+
+function getTransactionIcon(type: Transaction['type'], color: string) {
+  if (type === 'CASH_IN') {
+    return <Ionicons name="arrow-down" size={12} color={color} style={styles.badgeIcon} />;
+  }
+  if (type === 'UPI_IN') {
+    return <Ionicons name="phone-portrait-outline" size={12} color={color} style={styles.badgeIcon} />;
+  }
+  return <Ionicons name="arrow-up" size={12} color={color} style={styles.badgeIcon} />;
+}
 
 export function TransactionRow({
   transaction,
@@ -27,6 +39,7 @@ export function TransactionRow({
   return (
     <View style={styles.row}>
       <View style={[styles.badge, { backgroundColor: tone.background }]}>
+        {getTransactionIcon(transaction.type, tone.accent)}
         <Text style={[styles.badgeText, { color: tone.accent }]}>
           {transactionTypeLabel(transaction.type)}
         </Text>
@@ -47,27 +60,32 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   badge: {
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    minWidth: 84,
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    minWidth: 88,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  badgeIcon: {
+    marginRight: 4,
   },
   badgeText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
   },
   copy: {
     flex: 1,
   },
   amount: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1A1A1A',
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#111827',
   },
   meta: {
-    marginTop: 3,
-    fontSize: 13,
-    color: '#6B6B6B',
+    marginTop: 2,
+    fontSize: 12,
+    color: '#6B7280',
   },
 });
