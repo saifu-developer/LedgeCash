@@ -1,4 +1,5 @@
 import { router } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import { useState } from 'react';
 import {
@@ -83,6 +84,11 @@ export function SettingsScreen() {
   const [deleteShopConfirmInput, setDeleteShopConfirmInput] = useState('');
   const [deleteShopError, setDeleteShopError] = useState<string | null>(null);
 
+  const isConfirmed = Boolean(
+    activeShop &&
+      deleteShopConfirmInput.trim().toLowerCase() === activeShop.name.trim().toLowerCase()
+  );
+
   function triggerNotice(msg: string) {
     setNotice(msg);
     setTimeout(() => {
@@ -92,7 +98,9 @@ export function SettingsScreen() {
 
   async function handleConfirmDeleteShop() {
     if (!activeShop || !profile) return;
-    if (deleteShopConfirmInput.trim().toLowerCase() !== activeShop.name.trim().toLowerCase()) {
+    const isConfirmed =
+      deleteShopConfirmInput.trim().toLowerCase() === activeShop.name.trim().toLowerCase();
+    if (!isConfirmed) {
       setDeleteShopError(`Please type "${activeShop.name}" exactly to confirm.`);
       return;
     }
@@ -105,6 +113,22 @@ export function SettingsScreen() {
       const remaining = ownedShops.filter((s) => s.id !== shopIdToDelete);
 
       await deleteShop(shopIdToDelete);
+
+      // Clean Up Workers from AsyncStorage
+      const storedUsersJson = await AsyncStorage.getItem('cashmanager_users');
+      if (storedUsersJson) {
+        try {
+          const users = JSON.parse(storedUsersJson);
+          if (Array.isArray(users)) {
+            // Keep users that are NOT workers of the deleted shop
+            const remainingUsers = users.filter((u: any) => u.shopId !== shopIdToDelete);
+            await AsyncStorage.setItem('cashmanager_users', JSON.stringify(remainingUsers));
+          }
+        } catch {
+          // Ignored
+        }
+      }
+
       await removeWorkersForShop(shopIdToDelete);
       await reloadPersistedTransactions();
       await reloadPersistedAudit();
@@ -118,7 +142,7 @@ export function SettingsScreen() {
         triggerNotice(`Shop "${shopNameToDelete}" has been permanently deleted.`);
       } else {
         setActiveShopId(null);
-        router.replace('/shop-setup');
+        router.replace('/owner-setup');
       }
     } catch (e) {
       setDeleteShopLoading(false);
@@ -617,18 +641,24 @@ export function SettingsScreen() {
             </View>
 
             <Text style={styles.dangerWarningBody}>
-              This will permanently delete shop &ldquo;{activeShop?.name}&rdquo; ({activeShop?.id}), along with all transactions, worker associations, and audit trail records. This action cannot be reversed.
+              This will permanently delete shop &ldquo;{activeShop?.name ?? 'this shop'}&rdquo; ({activeShop?.id ?? 'N/A'}), along with all transactions, worker associations, and audit trail records. This action cannot be reversed.
             </Text>
 
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Delete this shop"
+              disabled={!activeShop}
               onPress={() => {
+                if (!activeShop) return;
                 setDeleteShopConfirmInput('');
                 setDeleteShopError(null);
                 setDeleteShopModalVisible(true);
               }}
-              style={({ pressed }) => [styles.deleteShopBtn, pressed && styles.pressed]}>
+              style={({ pressed }) => [
+                styles.deleteShopBtn,
+                !activeShop && styles.deleteShopBtnDisabled,
+                pressed && styles.pressed,
+              ]}>
               <Ionicons name="trash-outline" size={16} color="#FFFFFF" />
               <Text style={styles.deleteShopBtnText}>{`Delete "${activeShop?.name ?? 'Shop'}"`}</Text>
             </Pressable>
@@ -648,7 +678,7 @@ export function SettingsScreen() {
               <View style={styles.deleteModalIconBox}>
                 <Ionicons name="trash" size={24} color="#DC2626" />
               </View>
-              <Text style={styles.deleteModalTitle}>Delete {activeShop?.name}?</Text>
+              <Text style={styles.deleteModalTitle}>Delete {activeShop?.name ?? 'Shop'}?</Text>
               <Text style={styles.deleteModalSub}>
                 All financial transactions, worker accounts, and audit records under this shop will be permanently wiped.
               </Text>
@@ -656,7 +686,7 @@ export function SettingsScreen() {
 
             <View style={styles.deleteModalPrompt}>
               <Text style={styles.deleteModalPromptLabel}>
-                Type <Text style={styles.boldText}>{activeShop?.name}</Text> to confirm:
+                Type <Text style={styles.boldText}>{activeShop?.name ?? 'Shop'}</Text> to confirm:
               </Text>
               <TextInput
                 value={deleteShopConfirmInput}
@@ -691,16 +721,23 @@ export function SettingsScreen() {
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Confirm permanent shop deletion"
-                disabled={deleteShopLoading}
+                disabled={deleteShopLoading || !isConfirmed}
                 onPress={handleConfirmDeleteShop}
                 style={({ pressed }) => [
                   styles.confirmDeleteBtn,
-                  (pressed || deleteShopLoading) && styles.pressed,
+                  (!isConfirmed || deleteShopLoading) && styles.confirmDeleteBtnDisabled,
+                  pressed && isConfirmed && !deleteShopLoading && styles.pressed,
                 ]}>
                 {deleteShopLoading ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
                 ) : (
-                  <Text style={styles.confirmDeleteBtnText}>Permanently Delete</Text>
+                  <Text
+                    style={[
+                      styles.confirmDeleteBtnText,
+                      (!isConfirmed || deleteShopLoading) && styles.confirmDeleteBtnTextDisabled,
+                    ]}>
+                    Permanently Delete
+                  </Text>
                 )}
               </Pressable>
             </View>
@@ -1188,10 +1225,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  confirmDeleteBtnDisabled: {
+    backgroundColor: '#FCA5A5',
+    opacity: 0.6,
+  },
   confirmDeleteBtnText: {
     fontSize: 14,
     fontWeight: '700',
     color: '#FFFFFF',
+  },
+  confirmDeleteBtnTextDisabled: {
+    color: '#FFFFFF',
+    opacity: 0.8,
+  },
+  deleteShopBtnDisabled: {
+    opacity: 0.5,
   },
   pressed: {
     opacity: 0.8,

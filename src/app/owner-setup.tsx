@@ -166,11 +166,11 @@ export default function OwnerSetupScreen() {
             <View style={styles.profileBadgeCard}>
               <View style={styles.profileBadgeAvatar}>
                 <Text style={styles.profileAvatarText}>
-                  {existingOwner.name.charAt(0).toUpperCase()}
+                  {existingOwner?.name ? existingOwner.name.charAt(0).toUpperCase() : 'O'}
                 </Text>
               </View>
               <View style={styles.profileBadgeDetails}>
-                <Text style={styles.profileBadgeName}>{existingOwner.name}</Text>
+                <Text style={styles.profileBadgeName}>{existingOwner?.name ?? 'Business Owner'}</Text>
                 <Text style={styles.profileBadgeRole}>Master Administrator</Text>
               </View>
               <View style={styles.profileStatusPill}>
@@ -182,7 +182,7 @@ export default function OwnerSetupScreen() {
               {/* Option 1: Log In to Existing Account */}
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={`Log In to ${existingOwner.name}'s account`}
+                accessibilityLabel={`Log In to ${existingOwner?.name ?? 'owner'}'s account`}
                 style={({ pressed }) => [
                   styles.loginExistingButton,
                   pressed && styles.pressed,

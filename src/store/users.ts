@@ -383,6 +383,19 @@ export async function removeWorkersForShop(shopId: string): Promise<void> {
     ...snapshot,
     items: remaining,
   });
+
+  try {
+    const storedUsersJson = await AsyncStorage.getItem(STORAGE_KEY);
+    if (storedUsersJson) {
+      const users = JSON.parse(storedUsersJson);
+      if (Array.isArray(users)) {
+        const remainingUsers = users.filter((u: any) => u.shopId !== shopId);
+        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(remainingUsers));
+      }
+    }
+  } catch {
+    // Prototype persistence should not crash the UI.
+  }
 }
 
 export async function resetUserStore(): Promise<void> {
