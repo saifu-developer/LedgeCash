@@ -89,6 +89,7 @@ function parseStoredUsers(value: unknown): User[] | null {
       pin: record.pin,
       createdAt: record.createdAt,
       ...(typeof record.shopId === 'string' ? { shopId: record.shopId } : {}),
+      ...(typeof record.phone === 'string' ? { phone: record.phone } : {}),
     });
   }
 
@@ -241,7 +242,13 @@ export function verifyPin(profileId: string, pin: string, expectedShopId?: strin
   return user.pin === pin;
 }
 
-export async function setupOwner(input: { name: string; pin: string }): Promise<Profile> {
+export async function setupOwner(input: {
+  name: string;
+  pin: string;
+  id?: string;
+  phone?: string;
+  shopId?: string;
+}): Promise<Profile> {
   if (snapshot.items.some((u) => u.role === 'OWNER')) {
     throw new Error('Owner already exists.');
   }
@@ -256,12 +263,14 @@ export async function setupOwner(input: { name: string; pin: string }): Promise<
   }
 
   const owner: User = {
-    id: `owner-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: input.id || `owner-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     name,
     role: 'OWNER',
     status: 'ACTIVE',
     pin: input.pin,
     createdAt: new Date().toISOString(),
+    ...(input.phone ? { phone: input.phone } : {}),
+    ...(input.shopId ? { shopId: input.shopId } : {}),
   };
 
   await commit({
@@ -371,6 +380,65 @@ export async function changeOwnerPin(
   const next = { ...user, pin: newPin };
   await replaceUser(next);
   return toPublicProfile(next);
+}
+
+export async function upsertWorkerProfiles(
+  workers: {
+    id: string;
+    name: string;
+    role: UserRole;
+    status: UserStatus;
+    shopId: string;
+  }[]
+): Promise<void> {
+  const existingMap = new Map(snapshot.items.map((u) => [u.id, u]));
+
+  for (const w of workers) {
+    const existing = existingMap.get(w.id);
+    existingMap.set(w.id, {
+      id: w.id,
+      name: w.name,
+      role: w.role,
+      status: w.status,
+      pin: existing ? existing.pin : '',
+      createdAt: existing ? existing.createdAt : new Date().toISOString(),
+      shopId: w.shopId,
+      ...(existing?.phone ? { phone: existing.phone } : {}),
+    });
+  }
+
+  await commit({
+    ...snapshot,
+    items: Array.from(existingMap.values()),
+  });
+}
+
+export async function cacheAuthenticatedUser(user: {
+  id: string;
+  name: string;
+  role: UserRole;
+  status: UserStatus;
+  pin: string;
+  shopId: string;
+  phone?: string;
+}): Promise<void> {
+  const existing = snapshot.items.find((u) => u.id === user.id);
+  const updatedUser: User = {
+    id: user.id,
+    name: user.name,
+    role: user.role,
+    status: user.status,
+    pin: user.pin,
+    createdAt: existing ? existing.createdAt : new Date().toISOString(),
+    shopId: user.shopId,
+    ...(user.phone ? { phone: user.phone } : (existing?.phone ? { phone: existing.phone } : {})),
+  };
+
+  const remaining = snapshot.items.filter((u) => u.id !== user.id);
+  await commit({
+    ...snapshot,
+    items: [...remaining, updatedUser],
+  });
 }
 
 export function useUserStore(): UserSnapshot {

@@ -1,9 +1,6 @@
 package com.ledgecash.service;
 
-import com.ledgecash.dto.AuthResponse;
-import com.ledgecash.dto.CreateWorkerRequest;
-import com.ledgecash.dto.LoginRequest;
-import com.ledgecash.dto.RegisterOwnerRequest;
+import com.ledgecash.dto.*;
 import com.ledgecash.exception.BadRequestException;
 import com.ledgecash.exception.ForbiddenException;
 import com.ledgecash.exception.ResourceNotFoundException;
@@ -21,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.security.SecureRandom;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 @Service
@@ -40,6 +38,28 @@ public class AuthService {
         this.shopRepository = shopRepository;
         this.passwordEncoder = passwordEncoder;
         this.tokenProvider = tokenProvider;
+    }
+
+    @Transactional(readOnly = true)
+    public ShopWorkersResponse getShopWorkers(String shopCode) {
+        if (shopCode == null || shopCode.trim().isEmpty()) {
+            throw new BadRequestException("Shop code is required");
+        }
+        String normalizedCode = shopCode.trim().toUpperCase();
+        Shop shop = shopRepository.findById(normalizedCode)
+                .orElseThrow(() -> new ResourceNotFoundException("Shop not found with code: " + normalizedCode));
+
+        List<User> workers = userRepository.findByShopIdAndRoleAndStatus(
+                normalizedCode,
+                UserRole.WORKER,
+                UserStatus.ACTIVE
+        );
+
+        List<WorkerSummaryDto> workerDtos = workers.stream()
+                .map(w -> new WorkerSummaryDto(w.getId(), w.getName(), w.getRole(), w.getStatus(), normalizedCode))
+                .toList();
+
+        return new ShopWorkersResponse(shop.getId(), shop.getName(), shop.getOwnerId(), workerDtos);
     }
 
     @Transactional
@@ -78,8 +98,16 @@ public class AuthService {
         Shop shop = shopRepository.findById(shopId)
                 .orElseThrow(() -> new ResourceNotFoundException("Shop not found with code: " + shopId));
 
-        User user = userRepository.findByPhoneAndShopId(request.getPhone().trim(), shopId)
-                .orElseThrow(() -> new BadRequestException("Invalid credentials for this shop"));
+        User user;
+        if (request.getUserId() != null && !request.getUserId().trim().isEmpty()) {
+            user = userRepository.findByIdAndShopId(request.getUserId().trim(), shopId)
+                    .orElseThrow(() -> new BadRequestException("Invalid credentials for this shop"));
+        } else if (request.getPhone() != null && !request.getPhone().trim().isEmpty()) {
+            user = userRepository.findByPhoneAndShopId(request.getPhone().trim(), shopId)
+                    .orElseThrow(() -> new BadRequestException("Invalid credentials for this shop"));
+        } else {
+            throw new BadRequestException("User ID or phone number is required");
+        }
 
         if (user.getStatus() != UserStatus.ACTIVE) {
             throw new ForbiddenException("Account is inactive");
@@ -89,10 +117,12 @@ public class AuthService {
             throw new BadRequestException("Invalid credentials for this shop");
         }
 
-        String token = tokenProvider.generateToken(user.getId(), user.getPhone(), user.getName(), shopId, user.getRole());
+        String phone = user.getPhone() != null ? user.getPhone() : "";
+        String token = tokenProvider.generateToken(user.getId(), phone, user.getName(), shopId, user.getRole());
 
         return new AuthResponse(token, user.getId(), user.getName(), user.getPhone(), shopId, shop.getName(), user.getRole());
     }
+
 
     @Transactional
     public AuthResponse createWorker(CreateWorkerRequest request, UserPrincipal currentUser) {

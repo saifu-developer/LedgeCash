@@ -13,6 +13,7 @@ export type Profile = {
   status: UserStatus;
   createdAt: string;
   shopId?: string;
+  phone?: string;
 };
 
 export type WorkerProfile = Profile & {

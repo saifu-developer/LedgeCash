@@ -4,6 +4,7 @@ import com.ledgecash.dto.AuthResponse;
 import com.ledgecash.dto.CreateWorkerRequest;
 import com.ledgecash.dto.LoginRequest;
 import com.ledgecash.dto.RegisterOwnerRequest;
+import com.ledgecash.dto.ShopWorkersResponse;
 import com.ledgecash.security.UserPrincipal;
 import com.ledgecash.service.AuthService;
 import jakarta.validation.Valid;
@@ -20,6 +21,12 @@ public class AuthController {
 
     public AuthController(AuthService authService) {
         this.authService = authService;
+    }
+
+    @GetMapping("/shop/{shopCode}/workers")
+    public ResponseEntity<ShopWorkersResponse> getShopWorkers(@PathVariable String shopCode) {
+        ShopWorkersResponse response = authService.getShopWorkers(shopCode);
+        return ResponseEntity.ok(response);
     }
 
     @PostMapping("/register-owner")
@@ -42,3 +49,4 @@ public class AuthController {
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 }
+

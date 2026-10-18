@@ -1,5 +1,6 @@
 package com.ledgecash.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.ledgecash.model.Transaction;
 import com.ledgecash.model.TransactionType;
 
@@ -118,11 +119,22 @@ public class TransactionResponse {
         this.updatedAt = updatedAt;
     }
 
+    @JsonProperty("deleted")
     public boolean isDeleted() {
         return isDeleted;
     }
 
+    @JsonProperty("isDeleted")
+    public boolean getIsDeleted() {
+        return isDeleted;
+    }
+
     public void setDeleted(boolean deleted) {
-        isDeleted = deleted;
+        this.isDeleted = deleted;
+    }
+
+    public void setIsDeleted(boolean isDeleted) {
+        this.isDeleted = isDeleted;
     }
 }
+

@@ -17,10 +17,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { NumericKeypad, PinDots } from '@/components/ui/NumericKeypad';
 import { ResetConfirmModal } from '@/components/ui/ResetConfirmModal';
 import { BrandColors } from '@/constants/theme';
+import { ApiError } from '@/lib/api-client';
+import { registerOwnerWithCloud } from '@/lib/auth-service';
 import { resetAllAppData } from '@/lib/reset-app';
-import { setActiveShopId, setCurrentProfile } from '@/session/current-profile';
-import { createShop } from '@/store/shops';
-import { setupOwner, useUserStore } from '@/store/users';
+import { useUserStore } from '@/store/users';
 
 export default function OwnerSetupScreen() {
   const router = useRouter();
@@ -32,11 +32,13 @@ export default function OwnerSetupScreen() {
   // Form State
   const [step, setStep] = useState<1 | 2>(1);
   const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
   const [shopName, setShopName] = useState('');
   const [pin, setPin] = useState('');
 
   // UI Focus & Validation
   const [nameFocused, setNameFocused] = useState(false);
+  const [phoneFocused, setPhoneFocused] = useState(false);
   const [shopFocused, setShopFocused] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -60,6 +62,7 @@ export default function OwnerSetupScreen() {
       await resetAllAppData();
       setResetModalVisible(false);
       setName('');
+      setPhone('');
       setShopName('');
       setPin('');
       setStep(1);
@@ -74,10 +77,21 @@ export default function OwnerSetupScreen() {
 
   function handleGoToStep2() {
     const trimmedName = name.trim();
+    const trimmedPhone = phone.trim();
     const trimmedShop = shopName.trim();
 
     if (!trimmedName) {
       setError('Please enter your full name.');
+      return;
+    }
+
+    if (!trimmedPhone) {
+      setError('Please enter your mobile phone number for cloud account registration.');
+      return;
+    }
+
+    if (trimmedPhone.replace(/\D/g, '').length < 7) {
+      setError('Please enter a valid phone number (at least 7 digits).');
       return;
     }
 
@@ -117,23 +131,27 @@ export default function OwnerSetupScreen() {
     setError(null);
 
     try {
-      // 1. Create owner profile in users store
-      const newOwner = await setupOwner({
+      await registerOwnerWithCloud({
         name: name.trim(),
+        phone: phone.trim(),
         pin,
+        shopName: shopName.trim(),
       });
 
-      // 2. Create initial shop in shops table
-      const newShop = await createShop(newOwner.id, shopName.trim());
-
-      // 3. Set session
-      setCurrentProfile(newOwner);
-      setActiveShopId(newShop.id);
-
-      // 4. Launch directly into Owner Dashboard
+      // Launch directly into Owner Dashboard
       router.replace('/owner');
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to create business.');
+      if (e instanceof ApiError) {
+        if (e.status === 0 || e.status === 408) {
+          setError(
+            'Unable to connect to cloud server. Multi-device shared cloud sync requires cloud registration during setup. Please verify your connection or backend server and try again.'
+          );
+        } else {
+          setError(e.message || 'Failed to complete cloud business registration.');
+        }
+      } else {
+        setError(e instanceof Error ? e.message : 'Failed to create business.');
+      }
       setSubmitting(false);
     }
   }
@@ -297,6 +315,25 @@ export default function OwnerSetupScreen() {
                   onFocus={() => setNameFocused(true)}
                   onBlur={() => setNameFocused(false)}
                   autoCapitalize="words"
+                  autoCorrect={false}
+                  editable={!submitting}
+                />
+              </View>
+
+              <View style={styles.fieldGroup}>
+                <Text style={styles.fieldLabel}>MOBILE / PHONE NUMBER</Text>
+                <TextInput
+                  style={[styles.input, phoneFocused && styles.inputFocused]}
+                  placeholder="e.g. 9876543210"
+                  placeholderTextColor="#9CA3AF"
+                  value={phone}
+                  onChangeText={(t) => {
+                    setError(null);
+                    setPhone(t);
+                  }}
+                  onFocus={() => setPhoneFocused(true)}
+                  onBlur={() => setPhoneFocused(false)}
+                  keyboardType="phone-pad"
                   autoCorrect={false}
                   editable={!submitting}
                 />

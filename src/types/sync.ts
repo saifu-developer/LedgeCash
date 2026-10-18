@@ -20,6 +20,7 @@ export type ServerTransaction = {
   createdAt: string;
   updatedAt?: string;
   deleted?: boolean;
+  isDeleted?: boolean;
 };
 
 export type SyncBatchResponse = {

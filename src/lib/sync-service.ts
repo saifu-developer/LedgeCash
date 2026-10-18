@@ -125,9 +125,11 @@ export async function syncNow(): Promise<boolean> {
         [shopId]
       );
 
-      // Read lastSyncTimestamp from sync_meta
+      // Read lastSyncTimestamp from sync_meta per shopId
+      const metaKey = `lastSyncTimestamp_${shopId}`;
       const metaRow = await db.getFirstAsync<{ value: string }>(
-        "SELECT value FROM sync_meta WHERE key = 'lastSyncTimestamp'"
+        'SELECT value FROM sync_meta WHERE key = ?',
+        [metaKey]
       );
       const lastSyncTimestamp = metaRow?.value ?? null;
 
@@ -176,7 +178,9 @@ export async function syncNow(): Promise<boolean> {
               [serverTx.id]
             );
 
-            if (serverTx.deleted) {
+            const isDeleted = Boolean(serverTx.deleted || serverTx.isDeleted);
+
+            if (isDeleted) {
               if (!local || local.syncStatus === 'SYNCED') {
                 await db.runAsync('DELETE FROM transactions WHERE id = ?', [serverTx.id]);
               }
@@ -204,9 +208,9 @@ export async function syncNow(): Promise<boolean> {
                 );
               }
             } else {
-              // Insert new server record into local SQLite
+              // Insert new server record into local SQLite (safely avoiding duplicates)
               await db.runAsync(
-                `INSERT INTO transactions (
+                `INSERT OR REPLACE INTO transactions (
                   id, shopId, type, amount, createdAt, createdById, createdByName, category, description, syncStatus, updatedAt, isDeleted
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, 0)`,
                 [
@@ -226,11 +230,11 @@ export async function syncNow(): Promise<boolean> {
           }
         }
 
-        // C. Update lastSyncTimestamp in sync_meta
+        // C. Update lastSyncTimestamp in sync_meta per shopId
         if (response.syncTimestamp) {
           await db.runAsync(
-            "INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('lastSyncTimestamp', ?)",
-            [response.syncTimestamp]
+            'INSERT OR REPLACE INTO sync_meta (key, value) VALUES (?, ?)',
+            [metaKey, response.syncTimestamp]
           );
         }
       });
@@ -308,7 +312,15 @@ export function initSyncEngine(): () => void {
     }
   });
 
+  // Periodic background poll when app is active and online (every 25 seconds)
+  const intervalId = setInterval(() => {
+    if (currentState.isOnline && !currentState.isSyncing && getActiveShopId()) {
+      syncNow().catch(() => {});
+    }
+  }, 25000);
+
   return () => {
+    clearInterval(intervalId);
     unsubscribeNetInfo();
     isInitialized = false;
   };

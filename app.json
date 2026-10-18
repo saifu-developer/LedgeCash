@@ -8,7 +8,8 @@
     "scheme": "ledgecash",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/images/logo-icon.png"
+      "icon": "./assets/images/logo-icon.png",
+      "bundleIdentifier": "com.ledgecash.app"
     },
     "android": {
       "adaptiveIcon": {
@@ -16,7 +17,11 @@
         "foregroundImage": "./assets/images/logo-icon.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.ledgecash"
+      "package": "com.ledgecash.app",
+      "versionCode": 1,
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ]
     },
     "web": {
       "output": "static",

@@ -7,8 +7,9 @@ public class LoginRequest {
     @NotBlank(message = "Shop ID is required")
     private String shopId;
 
-    @NotBlank(message = "Phone number is required")
     private String phone;
+
+    private String userId;
 
     @NotBlank(message = "PIN is required")
     private String pin;
@@ -18,6 +19,13 @@ public class LoginRequest {
     public LoginRequest(String shopId, String phone, String pin) {
         this.shopId = shopId;
         this.phone = phone;
+        this.pin = pin;
+    }
+
+    public LoginRequest(String shopId, String phone, String userId, String pin) {
+        this.shopId = shopId;
+        this.phone = phone;
+        this.userId = userId;
         this.pin = pin;
     }
 
@@ -37,6 +45,14 @@ public class LoginRequest {
         this.phone = phone;
     }
 
+    public String getUserId() {
+        return userId;
+    }
+
+    public void setUserId(String userId) {
+        this.userId = userId;
+    }
+
     public String getPin() {
         return pin;
     }
@@ -45,3 +61,4 @@ public class LoginRequest {
         this.pin = pin;
     }
 }
+

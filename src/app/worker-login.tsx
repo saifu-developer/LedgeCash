@@ -1,6 +1,7 @@
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import {
+  ActivityIndicator,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -14,7 +15,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { BrandColors } from '@/constants/theme';
-import { getShopById } from '@/store/shops';
+import { fetchShopAndWorkersFromCloud, type WorkerSummary } from '@/lib/auth-service';
 import { getWorkersByShop } from '@/store/users';
 import type { Profile } from '@/types/profile';
 import type { Shop } from '@/types/shop';
@@ -33,8 +34,8 @@ function ProfileCard({
   profile,
   onPress,
 }: {
-  profile: Profile;
-  onPress: (profile: Profile) => void;
+  profile: Profile | WorkerSummary;
+  onPress: (profile: Profile | WorkerSummary) => void;
 }) {
   return (
     <Pressable
@@ -57,9 +58,11 @@ export default function WorkerLoginScreen() {
   const router = useRouter();
   const [shopIdInput, setShopIdInput] = useState('');
   const [currentShop, setCurrentShop] = useState<Shop | null>(null);
+  const [workers, setWorkers] = useState<WorkerSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  function handleValidateShop() {
+  async function handleValidateShop() {
     setError(null);
     const normalized = shopIdInput.trim().toUpperCase();
     if (!normalized) {
@@ -67,24 +70,34 @@ export default function WorkerLoginScreen() {
       return;
     }
 
-    const shop = getShopById(normalized);
-    if (!shop) {
-      setError('Shop not found. Please verify the Shop ID.');
+    setLoading(true);
+    try {
+      const data = await fetchShopAndWorkersFromCloud(normalized);
+      setCurrentShop({
+        id: data.shopId,
+        name: data.shopName,
+        ownerId: data.ownerId || '',
+        createdAt: new Date().toISOString(),
+      });
+      setWorkers(data.workers || []);
+      setError(null);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to verify shop. Please try again.');
       setCurrentShop(null);
-      return;
+      setWorkers([]);
+    } finally {
+      setLoading(false);
     }
-
-    setCurrentShop(shop);
-    setError(null);
   }
 
   function handleResetShop() {
     setCurrentShop(null);
+    setWorkers([]);
     setError(null);
     setShopIdInput('');
   }
 
-  function handleSelectProfile(worker: Profile) {
+  function handleSelectProfile(worker: Profile | WorkerSummary) {
     if (!currentShop) {
       setError('Please select a shop first.');
       return;
@@ -105,7 +118,9 @@ export default function WorkerLoginScreen() {
   }
 
   const activeWorkers = currentShop
-    ? getWorkersByShop(currentShop.id).filter((worker) => worker.status === 'ACTIVE')
+    ? (workers.length > 0 ? workers : getWorkersByShop(currentShop.id)).filter(
+        (worker) => worker.status === 'ACTIVE'
+      )
     : [];
 
   return (
@@ -146,6 +161,7 @@ export default function WorkerLoginScreen() {
                   placeholder="e.g. LC-XXXXXX"
                   placeholderTextColor="#B0B0AA"
                   value={shopIdInput}
+                  editable={!loading}
                   onChangeText={(val) => {
                     setError(null);
                     setShopIdInput(val.toUpperCase());
@@ -160,9 +176,21 @@ export default function WorkerLoginScreen() {
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Find Shop"
+                disabled={loading}
                 onPress={handleValidateShop}
-                style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}>
-                <Text style={styles.primaryButtonText}>Continue</Text>
+                style={({ pressed }) => [
+                  styles.primaryButton,
+                  (pressed || loading) && styles.pressed,
+                  loading && { opacity: 0.7 },
+                ]}>
+                {loading ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                    <Text style={styles.primaryButtonText}>Verifying Shop...</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.primaryButtonText}>Continue</Text>
+                )}
               </Pressable>
             </View>
           ) : (

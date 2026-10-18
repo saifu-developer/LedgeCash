@@ -1,5 +1,6 @@
 package com.ledgecash.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.ledgecash.model.TransactionType;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
@@ -26,6 +27,8 @@ public class SyncTransactionItem {
     private String createdByName;
     private Instant createdAt;
     private Instant updatedAt;
+
+    @JsonProperty("isDeleted")
     private boolean isDeleted;
 
     public SyncTransactionItem() {}
@@ -107,6 +110,11 @@ public class SyncTransactionItem {
     }
 
     public void setDeleted(boolean deleted) {
-        isDeleted = deleted;
+        this.isDeleted = deleted;
+    }
+
+    public void setIsDeleted(boolean isDeleted) {
+        this.isDeleted = isDeleted;
     }
 }
+

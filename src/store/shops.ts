@@ -109,7 +109,7 @@ export async function createShop(ownerId: string, name: string, customShopId?: s
   );
 
   emit({
-    items: [...snapshot.items, shop],
+    items: [...snapshot.items.filter((s) => s.id !== shop.id), shop],
     hydrated: snapshot.hydrated,
   });
 

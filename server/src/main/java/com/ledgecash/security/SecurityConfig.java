@@ -54,6 +54,7 @@ public class SecurityConfig {
                         .requestMatchers(
                                 "/api/v1/auth/register-owner",
                                 "/api/v1/auth/login",
+                                "/api/v1/auth/shop/**",
                                 "/h2-console/**",
                                 "/actuator/health",
                                 "/error"
