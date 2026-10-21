@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { setAuthToken } from '@/lib/api-client';
+import { STORAGE_KEY_LAST_WORKER_SHOP } from '@/lib/auth-service';
 import { getDb } from '@/lib/db';
 import { setActiveShopId, setCurrentProfile } from '@/session/current-profile';
 import { resetAuditStore } from '@/store/audit';
@@ -44,6 +45,7 @@ export async function resetAllAppData(): Promise<void> {
   try {
     await AsyncStorage.removeItem('cashmanager_users');
     await AsyncStorage.removeItem('cashmanager_auth_token');
+    await AsyncStorage.removeItem(STORAGE_KEY_LAST_WORKER_SHOP);
   } catch {
     // Non-fatal
   }

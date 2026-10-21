@@ -34,6 +34,12 @@ public class CashManagerBackendApplicationTests {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private com.ledgecash.repository.UserRepository userRepository;
+
+    @Autowired
+    private org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
+
     @Test
     void contextLoads() {
         // Verifies Spring context bootstraps cleanly with H2 profile
@@ -541,6 +547,247 @@ public class CashManagerBackendApplicationTests {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(new SyncBatchRequest(null, List.of(workerIllegalDelete)))))
                 .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("Verify Worker Creation Returns Server UserId and Direct Login by UserId Works While Mismatched ID Is Rejected")
+    void testWorkerIdConsistencyAndAuthentication() throws Exception {
+        // 1. Register Owner for Shop A
+        RegisterOwnerRequest ownerReq = new RegisterOwnerRequest("WorkerId Owner", "9811100091", "1234", "WorkerId Store");
+        MvcResult ownerRes = mockMvc.perform(post("/api/v1/auth/register-owner")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(ownerReq)))
+                .andExpect(status().isCreated())
+                .andReturn();
+
+        JsonNode ownerJson = objectMapper.readTree(ownerRes.getResponse().getContentAsString());
+        String ownerToken = ownerJson.get("token").asText();
+        String shopIdA = ownerJson.get("shopId").asText();
+
+        // 2. Owner creates worker
+        CreateWorkerRequest workerReq = new CreateWorkerRequest("Sita Staff", "9811100092", "4321");
+        MvcResult workerRes = mockMvc.perform(post("/api/v1/auth/create-worker")
+                        .header("Authorization", "Bearer " + ownerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(workerReq)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.userId").isString())
+                .andExpect(jsonPath("$.role").value("WORKER"))
+                .andExpect(jsonPath("$.shopId").value(shopIdA))
+                .andReturn();
+
+        JsonNode workerJson = objectMapper.readTree(workerRes.getResponse().getContentAsString());
+        String serverWorkerUserId = workerJson.get("userId").asText();
+        org.junit.jupiter.api.Assertions.assertFalse(serverWorkerUserId.startsWith("worker-"),
+                "Server generated worker userId should be a UUID, not a local worker-* ID");
+
+        // 3. Worker authenticates successfully using the exact server-generated userId (without phone)
+        LoginRequest validLoginWithUserId = new LoginRequest(shopIdA, null, serverWorkerUserId, "4321");
+        mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(validLoginWithUserId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.userId").value(serverWorkerUserId))
+                .andExpect(jsonPath("$.shopId").value(shopIdA))
+                .andExpect(jsonPath("$.role").value("WORKER"));
+
+        // 4. Client attempting to log in using a mismatched/local ID (e.g. worker-174000...) is rejected
+        String mismatchedLocalId = "worker-" + System.currentTimeMillis() + "-abc123";
+        LoginRequest mismatchedLogin = new LoginRequest(shopIdA, null, mismatchedLocalId, "4321");
+        mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(mismatchedLogin)))
+                .andExpect(status().isBadRequest());
+
+        // 5. Register Shop B to verify shop isolation with the valid serverWorkerUserId
+        RegisterOwnerRequest ownerBReq = new RegisterOwnerRequest("Other Owner 93", "9811100093", "5678", "Other Store 93");
+        MvcResult ownerBRes = mockMvc.perform(post("/api/v1/auth/register-owner")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(ownerBReq)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        String shopIdB = objectMapper.readTree(ownerBRes.getResponse().getContentAsString()).get("shopId").asText();
+
+        // 6. Worker attempting to authenticate into Shop B using their valid serverWorkerUserId is rejected (Shop Isolation)
+        LoginRequest crossShopLogin = new LoginRequest(shopIdB, null, serverWorkerUserId, "4321");
+        mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(crossShopLogin)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("Verify Cloud-Backed Worker Status Management: Owner Activation/Deactivation, Role Checks, Cross-Shop Protection, and Deactivated Worker Block")
+    void testWorkerStatusManagementAndSecurity() throws Exception {
+        // 1. Owner A registers Shop A
+        RegisterOwnerRequest ownerReq = new RegisterOwnerRequest("Status Owner", "9811100111", "1234", "Status Shop A");
+        MvcResult ownerRes = mockMvc.perform(post("/api/v1/auth/register-owner")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(ownerReq)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        JsonNode ownerJson = objectMapper.readTree(ownerRes.getResponse().getContentAsString());
+        String ownerToken = ownerJson.get("token").asText();
+        String shopIdA = ownerJson.get("shopId").asText();
+
+        // 2. Owner A creates Worker W1 in Shop A
+        CreateWorkerRequest workerReq = new CreateWorkerRequest("Raju Worker", "9811100112", "1111");
+        MvcResult workerRes = mockMvc.perform(post("/api/v1/auth/create-worker")
+                        .header("Authorization", "Bearer " + ownerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(workerReq)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        JsonNode workerJson = objectMapper.readTree(workerRes.getResponse().getContentAsString());
+        String workerId = workerJson.get("userId").asText();
+        String workerToken = workerJson.get("token").asText();
+
+        // 3. Worker cannot change status (403 Forbidden)
+        mockMvc.perform(patch("/api/v1/auth/workers/" + workerId + "/status")
+                        .header("Authorization", "Bearer " + workerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new UpdateWorkerStatusRequest(com.ledgecash.model.UserStatus.INACTIVE))))
+                .andExpect(status().isForbidden());
+
+        // 4. Owner B from another shop cannot change Worker W1's status (403 Forbidden)
+        RegisterOwnerRequest ownerBReq = new RegisterOwnerRequest("Status Owner B", "9811100113", "5678", "Status Shop B");
+        MvcResult ownerBRes = mockMvc.perform(post("/api/v1/auth/register-owner")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(ownerBReq)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        String ownerBToken = objectMapper.readTree(ownerBRes.getResponse().getContentAsString()).get("token").asText();
+
+        mockMvc.perform(patch("/api/v1/auth/workers/" + workerId + "/status")
+                        .header("Authorization", "Bearer " + ownerBToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new UpdateWorkerStatusRequest(com.ledgecash.model.UserStatus.INACTIVE))))
+                .andExpect(status().isForbidden());
+
+        // 5. Owner A deactivates own-shop Worker W1 (200 OK)
+        mockMvc.perform(patch("/api/v1/auth/workers/" + workerId + "/status")
+                        .header("Authorization", "Bearer " + ownerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new UpdateWorkerStatusRequest(com.ledgecash.model.UserStatus.INACTIVE))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(workerId))
+                .andExpect(jsonPath("$.status").value("INACTIVE"))
+                .andExpect(jsonPath("$.pin").doesNotExist())
+                .andExpect(jsonPath("$.pinHash").doesNotExist());
+
+        // 6. Deactivated Worker W1 cannot authenticate (403 Forbidden)
+        LoginRequest loginAttempt = new LoginRequest(shopIdA, null, workerId, "1111");
+        mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(loginAttempt)))
+                .andExpect(status().isForbidden());
+
+        // 7. Deactivated worker is excluded from shop worker discovery
+        mockMvc.perform(get("/api/v1/auth/shop/" + shopIdA + "/workers"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.workers").isArray())
+                .andExpect(jsonPath("$.workers.length()").value(0));
+
+        // 8. Owner A reactivates Worker W1 (200 OK)
+        mockMvc.perform(patch("/api/v1/auth/workers/" + workerId + "/status")
+                        .header("Authorization", "Bearer " + ownerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new UpdateWorkerStatusRequest(com.ledgecash.model.UserStatus.ACTIVE))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(workerId))
+                .andExpect(jsonPath("$.status").value("ACTIVE"));
+
+        // 9. Reactivated worker can now authenticate again (200 OK)
+        mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(loginAttempt)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.userId").value(workerId));
+    }
+
+    @Test
+    @DisplayName("Verify Cloud-Backed Worker PIN Management: Owner Modification, BCrypt Security, Old PIN Invalidation, and New PIN Authentication")
+    void testWorkerPinManagementAndSecurity() throws Exception {
+        // 1. Owner A registers Shop A
+        RegisterOwnerRequest ownerReq = new RegisterOwnerRequest("Pin Owner", "9811100221", "1234", "Pin Shop A");
+        MvcResult ownerRes = mockMvc.perform(post("/api/v1/auth/register-owner")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(ownerReq)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        JsonNode ownerJson = objectMapper.readTree(ownerRes.getResponse().getContentAsString());
+        String ownerToken = ownerJson.get("token").asText();
+        String shopIdA = ownerJson.get("shopId").asText();
+
+        // 2. Owner A creates Worker W1 with PIN 2222
+        CreateWorkerRequest workerReq = new CreateWorkerRequest("Gopal Worker", "9811100222", "2222");
+        MvcResult workerRes = mockMvc.perform(post("/api/v1/auth/create-worker")
+                        .header("Authorization", "Bearer " + ownerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(workerReq)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        JsonNode workerJson = objectMapper.readTree(workerRes.getResponse().getContentAsString());
+        String workerId = workerJson.get("userId").asText();
+        String workerToken = workerJson.get("token").asText();
+
+        // 3. Worker cannot change PIN via owner endpoint (403 Forbidden)
+        mockMvc.perform(patch("/api/v1/auth/workers/" + workerId + "/pin")
+                        .header("Authorization", "Bearer " + workerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new UpdateWorkerPinRequest("9876"))))
+                .andExpect(status().isForbidden());
+
+        // 4. Cross-shop owner cannot change worker PIN (403 Forbidden)
+        RegisterOwnerRequest ownerBReq = new RegisterOwnerRequest("Pin Owner B", "9811100223", "5678", "Pin Shop B");
+        MvcResult ownerBRes = mockMvc.perform(post("/api/v1/auth/register-owner")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(ownerBReq)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        String ownerBToken = objectMapper.readTree(ownerBRes.getResponse().getContentAsString()).get("token").asText();
+
+        mockMvc.perform(patch("/api/v1/auth/workers/" + workerId + "/pin")
+                        .header("Authorization", "Bearer " + ownerBToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new UpdateWorkerPinRequest("9876"))))
+                .andExpect(status().isForbidden());
+
+        // 5. Owner A changes Worker W1's PIN to 9876 (200 OK)
+        mockMvc.perform(patch("/api/v1/auth/workers/" + workerId + "/pin")
+                        .header("Authorization", "Bearer " + ownerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new UpdateWorkerPinRequest("9876"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(workerId))
+                .andExpect(jsonPath("$.name").value("Gopal Worker"))
+                .andExpect(jsonPath("$.pin").doesNotExist())
+                .andExpect(jsonPath("$.pinHash").doesNotExist());
+
+        // 6. Old PIN fails after change (400 Bad Request)
+        LoginRequest oldPinLogin = new LoginRequest(shopIdA, null, workerId, "2222");
+        mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(oldPinLogin)))
+                .andExpect(status().isBadRequest());
+
+        // 7. New PIN succeeds (200 OK)
+        LoginRequest newPinLogin = new LoginRequest(shopIdA, null, workerId, "9876");
+        mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(newPinLogin)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.userId").value(workerId));
+
+        // 8. Verify PIN remains BCrypt-hashed in database and not plaintext
+        com.ledgecash.model.User savedWorker = userRepository.findById(workerId).orElseThrow();
+        assertNotEquals("9876", savedWorker.getPinHash(), "PIN must not be stored in plaintext");
+        assertTrue(savedWorker.getPinHash().startsWith("$2a$") || savedWorker.getPinHash().startsWith("$2b$"),
+                "PIN hash must be a valid BCrypt hash");
+        assertTrue(passwordEncoder.matches("9876", savedWorker.getPinHash()),
+                "BCrypt password encoder must match the new PIN");
+        assertFalse(passwordEncoder.matches("2222", savedWorker.getPinHash()),
+                "Old PIN must not match the new BCrypt hash");
     }
 }
 

@@ -5,6 +5,9 @@ import com.ledgecash.dto.CreateWorkerRequest;
 import com.ledgecash.dto.LoginRequest;
 import com.ledgecash.dto.RegisterOwnerRequest;
 import com.ledgecash.dto.ShopWorkersResponse;
+import com.ledgecash.dto.UpdateWorkerPinRequest;
+import com.ledgecash.dto.UpdateWorkerStatusRequest;
+import com.ledgecash.dto.WorkerSummaryDto;
 import com.ledgecash.security.UserPrincipal;
 import com.ledgecash.service.AuthService;
 import jakarta.validation.Valid;
@@ -47,6 +50,24 @@ public class AuthController {
             @AuthenticationPrincipal UserPrincipal currentUser) {
         AuthResponse response = authService.createWorker(request, currentUser);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
+
+    @PatchMapping("/workers/{workerId}/status")
+    public ResponseEntity<WorkerSummaryDto> updateWorkerStatus(
+            @PathVariable String workerId,
+            @Valid @RequestBody UpdateWorkerStatusRequest request,
+            @AuthenticationPrincipal UserPrincipal currentUser) {
+        WorkerSummaryDto response = authService.updateWorkerStatus(workerId, request, currentUser);
+        return ResponseEntity.ok(response);
+    }
+
+    @PatchMapping("/workers/{workerId}/pin")
+    public ResponseEntity<WorkerSummaryDto> updateWorkerPin(
+            @PathVariable String workerId,
+            @Valid @RequestBody UpdateWorkerPinRequest request,
+            @AuthenticationPrincipal UserPrincipal currentUser) {
+        WorkerSummaryDto response = authService.updateWorkerPin(workerId, request, currentUser);
+        return ResponseEntity.ok(response);
     }
 }
 

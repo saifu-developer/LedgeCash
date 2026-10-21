@@ -13,7 +13,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { getCurrentProfile, isAuthorizedForShop } from '@/session/current-profile';
-import { changeWorkerPin, isValidPin, setWorkerStatus, useUserStore } from '@/store/users';
+import { updateWorkerPinWithCloud, updateWorkerStatusWithCloud } from '@/lib/auth-service';
+import { isValidPin, useUserStore } from '@/store/users';
 
 type WorkerDetailScreenProps = {
   workerId: string;
@@ -61,9 +62,15 @@ export function WorkerDetailScreen({ workerId }: WorkerDetailScreenProps) {
 
   async function handleStatusToggle() {
     setError(null);
+    setNotice(null);
     try {
-      await setWorkerStatus(selected.id, active ? 'INACTIVE' : 'ACTIVE');
-      setNotice(active ? 'Worker deactivated.' : 'Worker reactivated.');
+      const targetStatus = active ? 'INACTIVE' : 'ACTIVE';
+      const result = await updateWorkerStatusWithCloud(selected.id, targetStatus);
+      if (result.isCloudUpdated) {
+        setNotice(active ? 'Worker deactivated on cloud and locally.' : 'Worker reactivated on cloud and locally.');
+      } else {
+        setNotice(active ? 'Worker deactivated locally (offline). Reconnect to sync with cloud.' : 'Worker reactivated locally (offline). Reconnect to sync with cloud.');
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to update status.');
     }
@@ -87,12 +94,17 @@ export function WorkerDetailScreen({ workerId }: WorkerDetailScreenProps) {
     submittingRef.current = true;
     setSubmitting(true);
     setError(null);
+    setNotice(null);
 
     try {
-      await changeWorkerPin(selected.id, pin);
+      const result = await updateWorkerPinWithCloud(selected.id, pin);
       setPin('');
       setConfirmPin('');
-      setNotice('PIN updated.');
+      if (result.isCloudUpdated) {
+        setNotice('PIN updated on cloud and locally.');
+      } else {
+        setNotice('PIN updated locally (offline). Cloud PIN unchanged until online.');
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to change PIN.');
     } finally {

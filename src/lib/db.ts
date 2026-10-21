@@ -36,7 +36,8 @@ const asyncStorageUserStorage: UserStorage = {
   },
   saveUsers: async (users: StoredUser[]) => {
     try {
-      await AsyncStorage.setItem('cashmanager_users', JSON.stringify(users));
+      const sanitized = users.map(({ pin: _pin, ...rest }: any) => rest);
+      await AsyncStorage.setItem('cashmanager_users', JSON.stringify(sanitized));
     } catch {
       // Ignored
     }

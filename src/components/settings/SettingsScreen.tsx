@@ -1,5 +1,4 @@
 import { router } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import { useState } from 'react';
 import {
@@ -20,10 +19,10 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { BrandColors } from '@/constants/theme';
 import { exportDatabaseBackupJson } from '@/lib/export-utils';
+import { logout } from '@/lib/auth-service';
 import {
   getActiveShopId,
   setActiveShopId,
-  setCurrentProfile,
   useActiveShop,
   useCurrentProfile,
 } from '@/session/current-profile';
@@ -113,22 +112,6 @@ export function SettingsScreen() {
       const remaining = ownedShops.filter((s) => s.id !== shopIdToDelete);
 
       await deleteShop(shopIdToDelete);
-
-      // Clean Up Workers from AsyncStorage
-      const storedUsersJson = await AsyncStorage.getItem('cashmanager_users');
-      if (storedUsersJson) {
-        try {
-          const users = JSON.parse(storedUsersJson);
-          if (Array.isArray(users)) {
-            // Keep users that are NOT workers of the deleted shop
-            const remainingUsers = users.filter((u: any) => u.shopId !== shopIdToDelete);
-            await AsyncStorage.setItem('cashmanager_users', JSON.stringify(remainingUsers));
-          }
-        } catch {
-          // Ignored
-        }
-      }
-
       await removeWorkersForShop(shopIdToDelete);
       await reloadPersistedTransactions();
       await reloadPersistedAudit();
@@ -260,10 +243,7 @@ export function SettingsScreen() {
 
     const performLogout = () => {
       router.replace('/');
-      setTimeout(() => {
-        setCurrentProfile(null);
-        setActiveShopId(null);
-      }, 0);
+      void logout();
     };
 
     if (Platform.OS === 'web') {

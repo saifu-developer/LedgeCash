@@ -1,7 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
-const STORAGE_KEY_TOKEN = 'cashmanager_auth_token';
+import { getSecureAuthToken, setSecureAuthToken } from '@/lib/secure-storage';
+
 const STORAGE_KEY_API_URL = 'cashmanager_api_base_url';
 
 function getDefaultBaseUrl(): string {
@@ -39,26 +40,14 @@ export async function getAuthToken(): Promise<string | null> {
   if (cachedToken !== null) {
     return cachedToken;
   }
-  try {
-    const token = await AsyncStorage.getItem(STORAGE_KEY_TOKEN);
-    cachedToken = token;
-    return token;
-  } catch {
-    return null;
-  }
+  const token = await getSecureAuthToken();
+  cachedToken = token;
+  return token;
 }
 
 export async function setAuthToken(token: string | null): Promise<void> {
   cachedToken = token;
-  try {
-    if (token) {
-      await AsyncStorage.setItem(STORAGE_KEY_TOKEN, token);
-    } else {
-      await AsyncStorage.removeItem(STORAGE_KEY_TOKEN);
-    }
-  } catch {
-    // Ignore storage errors
-  }
+  await setSecureAuthToken(token);
 }
 
 export async function getApiBaseUrl(): Promise<string> {

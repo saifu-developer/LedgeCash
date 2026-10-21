@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -15,7 +15,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { BrandColors } from '@/constants/theme';
-import { fetchShopAndWorkersFromCloud, type WorkerSummary } from '@/lib/auth-service';
+import {
+  fetchShopAndWorkersFromCloud,
+  getLastWorkerShopId,
+  type WorkerSummary,
+} from '@/lib/auth-service';
 import { getWorkersByShop } from '@/store/users';
 import type { Profile } from '@/types/profile';
 import type { Shop } from '@/types/shop';
@@ -61,6 +65,19 @@ export default function WorkerLoginScreen() {
   const [workers, setWorkers] = useState<WorkerSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    void (async () => {
+      const savedShopId = await getLastWorkerShopId();
+      if (mounted && savedShopId) {
+        setShopIdInput((current) => current || savedShopId);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   async function handleValidateShop() {
     setError(null);

@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSyncExternalStore } from 'react';
 
+import { getSecureUserPin, setSecureUserPin, deleteSecureUserPin } from '@/lib/secure-storage';
 import { getCurrentProfile } from '@/session/current-profile';
 import type { Profile, User, UserRole, UserStatus } from '@/types/profile';
 
@@ -57,12 +58,17 @@ function isUserStatus(value: unknown): value is UserStatus {
   return value === 'ACTIVE' || value === 'INACTIVE';
 }
 
-function parseStoredUsers(value: unknown): User[] | null {
+type ParsedStoredUser = {
+  user: Profile;
+  legacyPin?: string;
+};
+
+function parseStoredUsers(value: unknown): ParsedStoredUser[] | null {
   if (!Array.isArray(value) || value.length === 0) {
     return null;
   }
 
-  const users: User[] = [];
+  const users: ParsedStoredUser[] = [];
 
   for (const item of value) {
     if (!item || typeof item !== 'object') {
@@ -75,32 +81,37 @@ function parseStoredUsers(value: unknown): User[] | null {
       typeof record.name !== 'string' ||
       !isUserRole(record.role) ||
       !isUserStatus(record.status) ||
-      typeof record.pin !== 'string' ||
       typeof record.createdAt !== 'string'
     ) {
       return null;
     }
 
-    users.push({
+    const profile: Profile = {
       id: record.id,
       name: record.name,
       role: record.role,
       status: record.status,
-      pin: record.pin,
       createdAt: record.createdAt,
       ...(typeof record.shopId === 'string' ? { shopId: record.shopId } : {}),
       ...(typeof record.phone === 'string' ? { phone: record.phone } : {}),
-    });
+    };
+
+    const legacyPin =
+      typeof record.pin === 'string' && record.pin.trim().length === 4
+        ? record.pin.trim()
+        : undefined;
+
+    users.push({ user: profile, legacyPin });
   }
 
   return users;
 }
 
-
-
 async function persistUsers(users: User[]) {
   try {
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(users));
+    // NEVER write PINs to AsyncStorage. Store only non-sensitive Profile data.
+    const nonSensitiveProfiles = users.map((u) => toPublicProfile(u));
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(nonSensitiveProfiles));
   } catch {
     // Prototype persistence should not crash the UI.
   }
@@ -140,9 +151,37 @@ export function loadPersistedUsers(): Promise<void> {
       const raw = await AsyncStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = parseStoredUsers(JSON.parse(raw));
-        if (parsed) {
+        if (parsed && parsed.length > 0) {
+          let hadLegacyPlaintextPins = false;
+          const hydratedUsers: User[] = [];
+
+          for (const item of parsed) {
+            let pin = await getSecureUserPin(item.user.id);
+
+            // Migration: If legacy plaintext PIN exists in AsyncStorage and SecureStore does not have it yet
+            if (item.legacyPin) {
+              hadLegacyPlaintextPins = true;
+              if (!pin) {
+                await setSecureUserPin(item.user.id, item.legacyPin);
+                const verified = await getSecureUserPin(item.user.id);
+                pin = verified === item.legacyPin ? verified : item.legacyPin;
+              }
+            }
+
+            hydratedUsers.push({
+              ...item.user,
+              pin: pin || '',
+            });
+          }
+
+          // If any legacy plaintext PIN was detected, re-persist sanitized profiles
+          // to completely eliminate plaintext PINs from AsyncStorage
+          if (hadLegacyPlaintextPins) {
+            await persistUsers(hydratedUsers);
+          }
+
           emit({
-            items: parsed,
+            items: hydratedUsers,
             hydrated: true,
           });
           return;
@@ -262,8 +301,11 @@ export async function setupOwner(input: {
     throw new Error('PIN must be exactly 4 digits.');
   }
 
+  const ownerId = input.id || `owner-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  await setSecureUserPin(ownerId, input.pin);
+
   const owner: User = {
-    id: input.id || `owner-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: ownerId,
     name,
     role: 'OWNER',
     status: 'ACTIVE',
@@ -282,9 +324,11 @@ export async function setupOwner(input: {
 }
 
 export async function addWorker(input: {
+  id?: string;
   name: string;
   pin: string;
   shopId: string;
+  phone?: string;
 }): Promise<Profile> {
   requireOwner();
 
@@ -302,19 +346,32 @@ export async function addWorker(input: {
     throw new Error('PIN must be exactly 4 digits.');
   }
 
+  const workerId = input.id?.trim() || createId();
+  await setSecureUserPin(workerId, input.pin);
+
+  const existingIndex = snapshot.items.findIndex((item) => item.id === workerId);
+  const existing = existingIndex >= 0 ? snapshot.items[existingIndex] : undefined;
+
   const worker: User = {
-    id: createId(),
+    id: workerId,
     name,
     role: 'WORKER',
     status: 'ACTIVE',
     pin: input.pin,
-    createdAt: new Date().toISOString(),
+    createdAt: existing ? existing.createdAt : new Date().toISOString(),
     shopId,
+    ...(input.phone?.trim()
+      ? { phone: input.phone.trim() }
+      : (existing?.phone ? { phone: existing.phone } : {})),
   };
+
+  const items = existingIndex >= 0
+    ? snapshot.items.map((user, idx) => (idx === existingIndex ? worker : user))
+    : [...snapshot.items, worker];
 
   await commit({
     ...snapshot,
-    items: [...snapshot.items, worker],
+    items,
   });
 
   return toPublicProfile(worker);
@@ -344,6 +401,8 @@ export async function changeWorkerPin(workerId: string, pin: string): Promise<Pr
   if (!user || user.role !== 'WORKER') {
     throw new Error('Worker not found.');
   }
+
+  await setSecureUserPin(workerId, pin);
 
   const next = { ...user, pin };
   await replaceUser(next);
@@ -377,6 +436,8 @@ export async function changeOwnerPin(
     throw new Error('New PIN must be different from current PIN.');
   }
 
+  await setSecureUserPin(ownerId, newPin);
+
   const next = { ...user, pin: newPin };
   await replaceUser(next);
   return toPublicProfile(next);
@@ -389,18 +450,66 @@ export async function upsertWorkerProfiles(
     role: UserRole;
     status: UserStatus;
     shopId: string;
-  }[]
+  }[],
+  shopId?: string
 ): Promise<void> {
   const existingMap = new Map(snapshot.items.map((u) => [u.id, u]));
+  const incomingIds = new Set(workers.map((w) => w.id));
+
+  // If shopId is provided, local workers for this shop who are absent from the active cloud list
+  // (and not un-synced local workers) are updated to INACTIVE to maintain cloud authority
+  if (shopId) {
+    for (const [id, user] of existingMap.entries()) {
+      if (
+        user.role === 'WORKER' &&
+        user.shopId === shopId &&
+        !incomingIds.has(id) &&
+        !id.startsWith('worker-')
+      ) {
+        existingMap.set(id, {
+          ...user,
+          status: 'INACTIVE',
+        });
+      }
+    }
+  }
 
   for (const w of workers) {
-    const existing = existingMap.get(w.id);
+    let existing = existingMap.get(w.id);
+
+    // Backward compatibility: match legacy local worker created with 'worker-' prefix
+    if (!existing) {
+      const legacyWorker = Array.from(existingMap.values()).find(
+        (u) =>
+          u.role === 'WORKER' &&
+          u.shopId === w.shopId &&
+          u.name.toLowerCase() === w.name.toLowerCase() &&
+          u.id.startsWith('worker-')
+      );
+      if (legacyWorker) {
+        existing = legacyWorker;
+        existingMap.delete(legacyWorker.id);
+        if (legacyWorker.pin) {
+          await setSecureUserPin(w.id, legacyWorker.pin);
+          await deleteSecureUserPin(legacyWorker.id);
+        }
+      }
+    }
+
+    let workerPin = existing ? existing.pin : '';
+    if (!workerPin) {
+      const storedSecurePin = await getSecureUserPin(w.id);
+      if (storedSecurePin) {
+        workerPin = storedSecurePin;
+      }
+    }
+
     existingMap.set(w.id, {
       id: w.id,
       name: w.name,
       role: w.role,
       status: w.status,
-      pin: existing ? existing.pin : '',
+      pin: workerPin,
       createdAt: existing ? existing.createdAt : new Date().toISOString(),
       shopId: w.shopId,
       ...(existing?.phone ? { phone: existing.phone } : {}),
@@ -421,7 +530,15 @@ export async function cacheAuthenticatedUser(user: {
   pin: string;
   shopId: string;
   phone?: string;
+  legacyProfileId?: string;
 }): Promise<void> {
+  if (user.pin) {
+    await setSecureUserPin(user.id, user.pin);
+  }
+  if (user.legacyProfileId && user.legacyProfileId !== user.id) {
+    await deleteSecureUserPin(user.legacyProfileId);
+  }
+
   const existing = snapshot.items.find((u) => u.id === user.id);
   const updatedUser: User = {
     id: user.id,
@@ -434,7 +551,9 @@ export async function cacheAuthenticatedUser(user: {
     ...(user.phone ? { phone: user.phone } : (existing?.phone ? { phone: existing.phone } : {})),
   };
 
-  const remaining = snapshot.items.filter((u) => u.id !== user.id);
+  const remaining = snapshot.items.filter(
+    (u) => u.id !== user.id && (!user.legacyProfileId || u.id !== user.legacyProfileId)
+  );
   await commit({
     ...snapshot,
     items: [...remaining, updatedUser],
@@ -446,28 +565,23 @@ export function useUserStore(): UserSnapshot {
 }
 
 export async function removeWorkersForShop(shopId: string): Promise<void> {
+  const workersToRemove = snapshot.items.filter((u) => u.shopId === shopId);
+  for (const w of workersToRemove) {
+    await deleteSecureUserPin(w.id);
+  }
+
   const remaining = snapshot.items.filter((u) => u.shopId !== shopId);
   await commit({
     ...snapshot,
     items: remaining,
   });
-
-  try {
-    const storedUsersJson = await AsyncStorage.getItem(STORAGE_KEY);
-    if (storedUsersJson) {
-      const users = JSON.parse(storedUsersJson);
-      if (Array.isArray(users)) {
-        const remainingUsers = users.filter((u: any) => u.shopId !== shopId);
-        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(remainingUsers));
-      }
-    }
-  } catch {
-    // Prototype persistence should not crash the UI.
-  }
 }
 
 export async function resetUserStore(): Promise<void> {
   loadPromise = null;
+  for (const u of snapshot.items) {
+    await deleteSecureUserPin(u.id);
+  }
   await AsyncStorage.removeItem(STORAGE_KEY);
   emit({
     items: [],

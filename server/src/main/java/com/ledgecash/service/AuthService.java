@@ -158,6 +158,53 @@ public class AuthService {
         return new AuthResponse(token, worker.getId(), worker.getName(), worker.getPhone(), shopId, shop.getName(), worker.getRole());
     }
 
+    @Transactional
+    public WorkerSummaryDto updateWorkerStatus(String workerId, UpdateWorkerStatusRequest request, UserPrincipal currentUser) {
+        if (!currentUser.isOwner()) {
+            throw new ForbiddenException("Only the shop owner can update worker status");
+        }
+
+        User worker = userRepository.findById(workerId)
+                .orElseThrow(() -> new ResourceNotFoundException("Worker not found: " + workerId));
+
+        if (worker.getRole() != UserRole.WORKER) {
+            throw new BadRequestException("Target user is not a worker");
+        }
+
+        if (!currentUser.getShopId().equals(worker.getShopId())) {
+            throw new ForbiddenException("Cannot modify a worker belonging to another shop");
+        }
+
+        worker.setStatus(request.getStatus());
+        User saved = userRepository.save(worker);
+
+        return new WorkerSummaryDto(saved.getId(), saved.getName(), saved.getRole(), saved.getStatus(), saved.getShopId());
+    }
+
+    @Transactional
+    public WorkerSummaryDto updateWorkerPin(String workerId, UpdateWorkerPinRequest request, UserPrincipal currentUser) {
+        if (!currentUser.isOwner()) {
+            throw new ForbiddenException("Only the shop owner can update worker PIN");
+        }
+
+        User worker = userRepository.findById(workerId)
+                .orElseThrow(() -> new ResourceNotFoundException("Worker not found: " + workerId));
+
+        if (worker.getRole() != UserRole.WORKER) {
+            throw new BadRequestException("Target user is not a worker");
+        }
+
+        if (!currentUser.getShopId().equals(worker.getShopId())) {
+            throw new ForbiddenException("Cannot modify a worker belonging to another shop");
+        }
+
+        String pinHash = passwordEncoder.encode(request.getPin().trim());
+        worker.setPinHash(pinHash);
+        User saved = userRepository.save(worker);
+
+        return new WorkerSummaryDto(saved.getId(), saved.getName(), saved.getRole(), saved.getStatus(), saved.getShopId());
+    }
+
     private String generateUniqueShopCode() {
         String chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
         for (int attempts = 0; attempts < 100; attempts++) {

@@ -59,7 +59,7 @@ public class SecurityConfig {
                                 "/actuator/health",
                                 "/error"
                         ).permitAll()
-                        .requestMatchers("/api/v1/auth/create-worker").hasRole("OWNER")
+                        .requestMatchers("/api/v1/auth/create-worker", "/api/v1/auth/workers/**").hasRole("OWNER")
                         .requestMatchers(HttpMethod.PUT, "/api/v1/transactions/**").hasRole("OWNER")
                         .requestMatchers(HttpMethod.DELETE, "/api/v1/transactions/**").hasRole("OWNER")
                         .requestMatchers("/api/v1/transactions/**").authenticated()

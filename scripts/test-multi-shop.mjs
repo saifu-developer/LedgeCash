@@ -95,10 +95,18 @@ try {
   // Verify columns
   const txCols = await adapter.getAllAsync('PRAGMA table_info(transactions);');
   assert.equal(txCols.some((c) => c.name === 'shopId'), true, 'transactions must have shopId column');
+  assert.equal(txCols.some((c) => c.name === 'syncStatus'), true, 'transactions must have syncStatus column');
+  assert.equal(txCols.some((c) => c.name === 'updatedAt'), true, 'transactions must have updatedAt column');
+  assert.equal(txCols.some((c) => c.name === 'isDeleted'), true, 'transactions must have isDeleted column');
+
+  const syncMetaTable = await adapter.getFirstAsync(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='sync_meta';"
+  );
+  assert.notEqual(syncMetaTable, null, 'sync_meta table must exist');
 
   await adapter.execAsync('PRAGMA journal_mode = DELETE;');
   rawDb.close();
-  console.log('  ✓ Test 1 passed: Fresh install properly initializes version 2 schema.');
+  console.log(`  ✓ Test 1 passed: Fresh install properly initializes version ${CURRENT_DATABASE_VERSION} schema.`);
 } finally {
   safeCleanup(freshDbPath);
 }
@@ -206,9 +214,13 @@ try {
   // 5. Execute ACTUAL production runMigrations
   await runMigrations(adapter, mockUserStorage);
 
-  // 6. Verify version updated to 2
+  // 6. Verify version updated to CURRENT_DATABASE_VERSION (v1 -> v2 -> v3)
   const updatedVersion = await getDatabaseVersion(adapter);
-  assert.equal(updatedVersion, 2, 'Version must be 2 after migration');
+  assert.equal(
+    updatedVersion,
+    CURRENT_DATABASE_VERSION,
+    `Version must be ${CURRENT_DATABASE_VERSION} after migration`
+  );
 
   // 7. Verify all legacy transactions preserved
   const txRows = await adapter.getAllAsync('SELECT * FROM transactions ORDER BY createdAt ASC;');
@@ -217,6 +229,21 @@ try {
   assert.equal(txRows[0].amount, 1500);
   assert.equal(txRows[1].id, 'txn-legacy-2');
   assert.equal(txRows[2].id, 'txn-legacy-3');
+
+  // Verify V3 sync columns and sync_meta table exist after migration
+  const txColsAfter = await adapter.getAllAsync('PRAGMA table_info(transactions);');
+  assert.equal(txColsAfter.some((c) => c.name === 'syncStatus'), true, 'transactions must have syncStatus column');
+  assert.equal(txColsAfter.some((c) => c.name === 'updatedAt'), true, 'transactions must have updatedAt column');
+  assert.equal(txColsAfter.some((c) => c.name === 'isDeleted'), true, 'transactions must have isDeleted column');
+
+  const syncMetaTableAfter = await adapter.getFirstAsync(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='sync_meta';"
+  );
+  assert.notEqual(syncMetaTableAfter, null, 'sync_meta table must exist after v3 migration');
+
+  // Verify legacy records received V3 defaults (e.g. syncStatus = 'SYNCED', isDeleted = 0)
+  assert.equal(txRows[0].syncStatus, 'SYNCED', 'Legacy transactions must default to SYNCED in v3');
+  assert.equal(txRows[0].isDeleted, 0, 'Legacy transactions must default to isDeleted = 0 in v3');
 
   // Verify shop was created and assigned
   const shops = await adapter.getAllAsync('SELECT * FROM shops;');
