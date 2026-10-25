@@ -116,6 +116,36 @@ export async function createShop(ownerId: string, name: string, customShopId?: s
   return shop;
 }
 
+/**
+ * Upserts a snapshot of shops into the local SQLite database and updates the in-memory store.
+ * Preserves existing shops not present in the update while replacing matching ones.
+ */
+export async function upsertShops(shops: Shop[]): Promise<void> {
+  if (!shops || shops.length === 0) {
+    return;
+  }
+
+  const db = await getDb();
+  await db.withTransactionAsync(async () => {
+    for (const shop of shops) {
+      const createdAt = shop.createdAt || new Date().toISOString();
+      await db.runAsync(
+        'INSERT OR REPLACE INTO shops (id, name, ownerId, createdAt) VALUES (?, ?, ?, ?)',
+        [shop.id, shop.name, shop.ownerId, createdAt]
+      );
+    }
+  });
+
+  const incomingIds = new Set(shops.map((s) => s.id));
+  const remaining = snapshot.items.filter((s) => !incomingIds.has(s.id));
+  const merged = [...remaining, ...shops];
+
+  emit({
+    items: merged,
+    hydrated: true,
+  });
+}
+
 export function getShopById(shopId: string): Shop | undefined {
   return snapshot.items.find((item) => item.id === shopId);
 }
@@ -127,6 +157,9 @@ export function getShopsByOwner(ownerId: string): Shop[] {
 export function getShops(): Shop[] {
   return snapshot.items.map((s) => ({ ...s }));
 }
+
+export { getActiveShopId, setActiveShopId } from '@/session/current-profile';
+
 
 export async function updateShop(
   shopId: string,

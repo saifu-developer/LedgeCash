@@ -4,6 +4,7 @@ import {
   ActivityIndicator,
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -12,14 +13,17 @@ import {
   TextInput,
   View,
 } from 'react-native';
+
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { NumericKeypad, PinDots } from '@/components/ui/NumericKeypad';
 import { ResetConfirmModal } from '@/components/ui/ResetConfirmModal';
 import { BrandColors } from '@/constants/theme';
 import { ApiError } from '@/lib/api-client';
-import { registerOwnerWithCloud } from '@/lib/auth-service';
+import { registerOwnerWithCloud, loginOwnerWithCloud } from '@/lib/auth-service';
 import { resetAllAppData } from '@/lib/reset-app';
+
+
 import { useUserStore } from '@/store/users';
 
 export default function OwnerSetupScreen() {
@@ -46,6 +50,37 @@ export default function OwnerSetupScreen() {
   // Reset Modal State
   const [resetModalVisible, setResetModalVisible] = useState(false);
   const [resetting, setResetting] = useState(false);
+
+  // Cloud Owner Login Modal State
+  const [cloudLoginVisible, setCloudLoginVisible] = useState(false);
+  const [loginPhone, setLoginPhone] = useState('');
+  const [loginPin, setLoginPin] = useState('');
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loginLoading, setLoginLoading] = useState(false);
+
+  async function handleCloudOwnerLogin() {
+    const trimmed = loginPhone.trim();
+    if (!trimmed) {
+      setLoginError('Please enter your phone number.');
+      return;
+    }
+    if (loginPin.length !== 4) {
+      setLoginError('Please enter your 4-digit PIN.');
+      return;
+    }
+
+    setLoginLoading(true);
+    setLoginError(null);
+    try {
+      await loginOwnerWithCloud({ phone: trimmed, pin: loginPin });
+      setCloudLoginVisible(false);
+      router.replace('/owner');
+    } catch (err: any) {
+      setLoginLoading(false);
+      setLoginError(err?.message || 'Login failed. Please check your credentials.');
+    }
+  }
+
 
   // Dynamic preview for Shop Code
   const shopCodePreview = useMemo(() => {
@@ -381,6 +416,19 @@ export default function OwnerSetupScreen() {
                   Continue to Security PIN →
                 </Text>
               </Pressable>
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Log in with existing cloud account"
+                onPress={() => {
+                  setLoginError(null);
+                  setCloudLoginVisible(true);
+                }}
+                style={({ pressed }) => [styles.cloudLoginLinkBtn, pressed && styles.pressed]}>
+                <Text style={styles.cloudLoginLinkText}>
+                  Already have an account? <Text style={styles.cloudLoginLinkBold}>Log in with Cloud PIN →</Text>
+                </Text>
+              </Pressable>
             </View>
           )}
 
@@ -420,9 +468,79 @@ export default function OwnerSetupScreen() {
           )}
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={cloudLoginVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCloudLoginVisible(false)}>
+        <View style={styles.loginBackdrop}>
+          <View style={styles.loginCard}>
+            <View style={styles.loginHeader}>
+              <Text style={styles.loginTitle}>Cloud Owner Log In</Text>
+              <Pressable onPress={() => setCloudLoginVisible(false)} style={styles.loginCloseBtn}>
+                <Text style={styles.loginCloseText}>✕</Text>
+              </Pressable>
+            </View>
+            <Text style={styles.loginSubtitle}>
+              Enter your registered mobile phone number and 4-digit PIN.
+            </Text>
+
+            <Text style={styles.loginFieldLabel}>MOBILE / PHONE NUMBER</Text>
+            <TextInput
+              style={styles.loginInput}
+              placeholder="e.g. 9876543210"
+              placeholderTextColor="#9CA3AF"
+              value={loginPhone}
+              onChangeText={(t) => {
+                setLoginError(null);
+                setLoginPhone(t);
+              }}
+              keyboardType="phone-pad"
+              editable={!loginLoading}
+            />
+
+            <Text style={styles.loginFieldLabel}>4-DIGIT MASTER PIN</Text>
+            <TextInput
+              style={styles.loginInput}
+              placeholder="••••"
+              placeholderTextColor="#9CA3AF"
+              value={loginPin}
+              onChangeText={(t) => {
+                setLoginError(null);
+                setLoginPin(t.replace(/\D/g, '').slice(0, 4));
+              }}
+              keyboardType="number-pad"
+              maxLength={4}
+              secureTextEntry
+              editable={!loginLoading}
+            />
+
+            {loginError ? <Text style={styles.loginErrorText}>{loginError}</Text> : null}
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Log In"
+              disabled={loginLoading}
+              onPress={handleCloudOwnerLogin}
+              style={({ pressed }) => [
+                styles.loginSubmitBtn,
+                loginLoading && styles.buttonDisabled,
+                pressed && styles.pressed,
+              ]}>
+              {loginLoading ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Text style={styles.loginSubmitText}>Log In to Business →</Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
+
 
 const styles = StyleSheet.create({
   safeArea: {
@@ -727,4 +845,99 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
   },
+  cloudLoginLinkBtn: {
+    marginTop: 14,
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  cloudLoginLinkText: {
+    fontSize: 14,
+    color: '#6B7280',
+  },
+  cloudLoginLinkBold: {
+    color: BrandColors.navy,
+    fontWeight: '700',
+  },
+  loginBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(6, 38, 80, 0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  loginCard: {
+    width: '100%',
+    maxWidth: 400,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  loginHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  loginTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: BrandColors.navy,
+  },
+  loginCloseBtn: {
+    padding: 6,
+  },
+  loginCloseText: {
+    fontSize: 16,
+    color: '#6B7280',
+    fontWeight: '700',
+  },
+  loginSubtitle: {
+    fontSize: 13,
+    color: '#6B7280',
+    marginBottom: 16,
+    lineHeight: 18,
+  },
+  loginFieldLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: BrandColors.navy,
+    letterSpacing: 0.5,
+    marginBottom: 6,
+  },
+  loginInput: {
+    backgroundColor: '#F9FAFB',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    color: BrandColors.navy,
+    marginBottom: 14,
+  },
+  loginErrorText: {
+    color: '#DC2626',
+    fontSize: 13,
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  loginSubmitBtn: {
+    backgroundColor: BrandColors.green,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+  },
+  loginSubmitText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
 });
+

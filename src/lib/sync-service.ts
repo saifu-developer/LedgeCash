@@ -3,11 +3,80 @@ import { useSyncExternalStore } from 'react';
 
 import { apiClient, getAuthToken } from '@/lib/api-client';
 import { getDb } from '@/lib/db';
+import { getShopIdFromJwt } from '@/lib/jwt-utils';
 import { getActiveShopId } from '@/session/current-profile';
 import type { SyncStatus, TransactionType } from '@/types/transaction';
 import type { SyncBatchResponse, SyncState } from '@/types/sync';
 
 export type { SyncState };
+
+export class CrossShopSyncError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CrossShopSyncError';
+  }
+}
+
+export interface SyncPreflightResult {
+  allowed: boolean;
+  activeShopId: string | null;
+  jwtShopId: string | null;
+  reason?: string;
+}
+
+/**
+ * Validates the strict multi-shop sync invariant before any network or database sync:
+ *   ACTIVE SHOP ID === JWT SHOP ID === SYNC SHOP ID
+ *
+ * If either is missing or they differ, sync must abort immediately without
+ * contacting the backend or modifying local records.
+ */
+export async function validateSyncPreflight(): Promise<SyncPreflightResult> {
+  const activeShopId = getActiveShopId();
+  if (!activeShopId) {
+    return {
+      allowed: false,
+      activeShopId: null,
+      jwtShopId: null,
+      reason: 'Sync aborted: No activeShopId found in current session.',
+    };
+  }
+
+  const token = await getAuthToken();
+  if (!token) {
+    return {
+      allowed: false,
+      activeShopId,
+      jwtShopId: null,
+      reason: 'Sync aborted: No authentication token found in SecureStore.',
+    };
+  }
+
+  const jwtShopId = getShopIdFromJwt(token);
+  if (!jwtShopId) {
+    return {
+      allowed: false,
+      activeShopId,
+      jwtShopId: null,
+      reason: 'Sync aborted: Authenticated JWT contains no valid shopId claim.',
+    };
+  }
+
+  if (activeShopId !== jwtShopId) {
+    return {
+      allowed: false,
+      activeShopId,
+      jwtShopId,
+      reason: `Sync preflight rejected: activeShopId "${activeShopId}" does not match JWT shopId "${jwtShopId}".`,
+    };
+  }
+
+  return {
+    allowed: true,
+    activeShopId,
+    jwtShopId,
+  };
+}
 
 type SyncCompleteCallback = () => Promise<void> | void;
 let onSyncCompleteCallback: SyncCompleteCallback | null = null;
@@ -72,7 +141,7 @@ export async function refreshPendingCount(): Promise<number> {
 }
 
 /**
- * Core bidirectional sync worker
+ * Core bidirectional sync worker with multi-shop hardening
  */
 let syncPromise: Promise<boolean> | null = null;
 
@@ -82,16 +151,27 @@ export async function syncNow(): Promise<boolean> {
   }
 
   syncPromise = (async () => {
-    const shopId = getActiveShopId();
-    const token = await getAuthToken();
+    // 0. Perform strict multi-shop preflight validation
+    // Enforce: ACTIVE SHOP ID === JWT SHOP ID === SYNC SHOP ID
+    const preflight = await validateSyncPreflight();
 
     // Refresh pending count before attempting
     await refreshPendingCount();
 
-    if (!shopId || !token) {
-      // User is not authenticated with remote backend; skip cloud sync
+    if (!preflight.allowed) {
+      if (
+        preflight.activeShopId &&
+        preflight.jwtShopId &&
+        preflight.activeShopId !== preflight.jwtShopId
+      ) {
+        // Log diagnostic message without token or PIN contents
+        console.warn(`[SyncPreflight] ${preflight.reason}`);
+        emit({ isSyncing: false, error: preflight.reason });
+      }
       return false;
     }
+
+    const shopId = preflight.jwtShopId; // Guaranteed non-null and equal to activeShopId
 
     const net = await NetInfo.fetch();
     const online = Boolean(net.isConnected && net.isInternetReachable !== false);
@@ -106,7 +186,7 @@ export async function syncNow(): Promise<boolean> {
     try {
       const db = await getDb();
 
-      // 1. Fetch local pending items
+      // 1. Fetch local pending items for the authenticated shop only
       const pendingRows = await db.getAllAsync<{
         id: string;
         shopId: string;
@@ -125,7 +205,17 @@ export async function syncNow(): Promise<boolean> {
         [shopId]
       );
 
-      // Read lastSyncTimestamp from sync_meta per shopId
+      // Verify every pending row strictly belongs to this authenticated shop
+      for (const row of pendingRows) {
+        if (row.shopId !== shopId) {
+          const msg = `Security violation: Pending transaction ${row.id} has shopId "${row.shopId}" (expected "${shopId}").`;
+          console.warn(`[SyncSecurity] ${msg}`);
+          emit({ isSyncing: false, error: 'Transaction shop mismatch detected.' });
+          return false;
+        }
+      }
+
+      // Read lastSyncTimestamp from sync_meta per shopId (strictly isolated per shop)
       const metaKey = `lastSyncTimestamp_${shopId}`;
       const metaRow = await db.getFirstAsync<{ value: string }>(
         'SELECT value FROM sync_meta WHERE key = ?',
@@ -158,6 +248,28 @@ export async function syncNow(): Promise<boolean> {
 
       // 4. Update local SQLite database with results
       await db.withTransactionAsync(async () => {
+        // Security check on incoming server changes:
+        // Reject any response record that belongs to another shop or collides with another shop locally
+        if (response.serverChanges && response.serverChanges.length > 0) {
+          for (const serverTx of response.serverChanges) {
+            if (serverTx.shopId && serverTx.shopId !== shopId) {
+              const msg = `Cross-shop remote data rejected: serverChange transaction ${serverTx.id} belongs to shop "${serverTx.shopId}", but authenticated shop is "${shopId}".`;
+              console.warn(`[SyncSecurity] ${msg}`);
+              throw new CrossShopSyncError(msg);
+            }
+
+            const local = await db.getFirstAsync<{ id: string; shopId: string; syncStatus: string }>(
+              'SELECT id, shopId, syncStatus FROM transactions WHERE id = ?',
+              [serverTx.id]
+            );
+            if (local && local.shopId && local.shopId !== shopId) {
+              const msg = `Cross-shop collision rejected: remote transaction ${serverTx.id} collides with local transaction in shop "${local.shopId}".`;
+              console.warn(`[SyncSecurity] ${msg}`);
+              throw new CrossShopSyncError(msg);
+            }
+          }
+        }
+
         // A. Resolve pushed rows
         for (const row of pendingRows) {
           if (row.syncStatus === 'PENDING_DELETE' || row.isDeleted === 1) {
@@ -209,13 +321,14 @@ export async function syncNow(): Promise<boolean> {
               }
             } else {
               // Insert new server record into local SQLite (safely avoiding duplicates)
+              // Strictly bind to verified shopId
               await db.runAsync(
                 `INSERT OR REPLACE INTO transactions (
                   id, shopId, type, amount, createdAt, createdById, createdByName, category, description, syncStatus, updatedAt, isDeleted
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, 0)`,
                 [
                   serverTx.id,
-                  serverTx.shopId,
+                  shopId,
                   serverTx.type,
                   serverTx.amount,
                   serverTx.createdAt,

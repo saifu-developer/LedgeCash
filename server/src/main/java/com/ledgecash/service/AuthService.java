@@ -123,6 +123,104 @@ public class AuthService {
         return new AuthResponse(token, user.getId(), user.getName(), user.getPhone(), shopId, shop.getName(), user.getRole());
     }
 
+    @Transactional(readOnly = true)
+    public OwnerLoginResponse ownerLogin(OwnerLoginRequest request) {
+        if (request.getPhone() == null || request.getPhone().trim().isEmpty()) {
+            throw new BadRequestException("Phone number is required");
+        }
+        if (request.getPin() == null || request.getPin().trim().isEmpty()) {
+            throw new BadRequestException("PIN is required");
+        }
+
+        String phone = request.getPhone().trim();
+        User owner = userRepository.findByPhone(phone)
+                .orElseThrow(() -> new BadRequestException("Invalid credentials"));
+
+        if (owner.getRole() != UserRole.OWNER) {
+            throw new BadRequestException("Invalid credentials");
+        }
+
+        if (owner.getStatus() != UserStatus.ACTIVE) {
+            throw new ForbiddenException("Account is inactive");
+        }
+
+        if (!passwordEncoder.matches(request.getPin().trim(), owner.getPinHash())) {
+            throw new BadRequestException("Invalid credentials");
+        }
+
+        List<Shop> ownedShops = shopRepository.findByOwnerId(owner.getId());
+
+        Shop defaultShop = null;
+        if (owner.getShopId() != null && !owner.getShopId().isBlank()) {
+            defaultShop = ownedShops.stream()
+                    .filter(s -> s.getId().equals(owner.getShopId()))
+                    .findFirst()
+                    .orElse(null);
+        }
+        if (defaultShop == null && !ownedShops.isEmpty()) {
+            defaultShop = ownedShops.get(0);
+        }
+
+        String activeShopId = defaultShop != null ? defaultShop.getId() : "";
+        String activeShopName = defaultShop != null ? defaultShop.getName() : "";
+
+        String token = tokenProvider.generateToken(
+                owner.getId(),
+                owner.getPhone(),
+                owner.getName(),
+                activeShopId,
+                owner.getRole()
+        );
+
+        List<ShopResponse> shopResponses = ownedShops.stream()
+                .map(ShopResponse::fromEntity)
+                .toList();
+
+        return new OwnerLoginResponse(
+                token,
+                owner.getId(),
+                owner.getName(),
+                owner.getPhone(),
+                owner.getRole(),
+                activeShopId,
+                activeShopName,
+                shopResponses
+        );
+    }
+
+    @Transactional(readOnly = true)
+    public SwitchShopResponse switchShop(SwitchShopRequest request, UserPrincipal currentUser) {
+        if (!currentUser.isOwner()) {
+            throw new ForbiddenException("Only the shop owner can switch shops");
+        }
+
+        if (request.getShopId() == null || request.getShopId().trim().isEmpty()) {
+            throw new BadRequestException("Shop ID is required");
+        }
+
+        String targetShopId = request.getShopId().trim().toUpperCase();
+        Shop shop = shopRepository.findByIdAndOwnerId(targetShopId, currentUser.getId())
+                .orElseThrow(() -> new ForbiddenException("You are not authorized to access this shop: " + targetShopId));
+
+        String newToken = tokenProvider.generateToken(
+                currentUser.getId(),
+                currentUser.getPhone(),
+                currentUser.getName(),
+                shop.getId(),
+                currentUser.getRole()
+        );
+
+        return new SwitchShopResponse(
+                newToken,
+                currentUser.getId(),
+                currentUser.getName(),
+                currentUser.getPhone(),
+                shop.getId(),
+                shop.getName(),
+                currentUser.getRole()
+        );
+    }
+
 
     @Transactional
     public AuthResponse createWorker(CreateWorkerRequest request, UserPrincipal currentUser) {

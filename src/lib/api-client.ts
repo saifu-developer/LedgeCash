@@ -147,3 +147,93 @@ export async function apiClient<T = any>(
     throw new ApiError(error.message || 'Network request failed', 0, error);
   }
 }
+
+/* ====================================================================
+   MULTI-SHOP BACKEND API METHODS (PHASE 3.1)
+   ==================================================================== */
+
+export interface OwnerLoginRequest {
+  phone: string;
+  pin: string;
+}
+
+export interface CloudShopDto {
+  id: string;
+  name: string;
+  ownerId: string;
+  createdAt: string;
+}
+
+export interface OwnerLoginResponse {
+  token: string;
+  tokenType: string;
+  userId: string;
+  name: string;
+  phone: string;
+  role: 'OWNER' | 'WORKER';
+  activeShopId: string;
+  activeShopName: string;
+  shops: CloudShopDto[];
+}
+
+export interface SwitchShopRequest {
+  shopId: string;
+}
+
+export interface SwitchShopResponse {
+  token: string;
+  tokenType: string;
+  userId: string;
+  name: string;
+  phone: string;
+  shopId: string;
+  shopName: string;
+  role: 'OWNER' | 'WORKER';
+}
+
+export interface CreateShopRequest {
+  name: string;
+}
+
+/**
+ * Authenticates an OWNER with phone + PIN against the multi-shop endpoint.
+ * Returns JWT, owner identity, initial server-selected active shop, and owned shops.
+ */
+export async function loginOwnerApi(request: OwnerLoginRequest): Promise<OwnerLoginResponse> {
+  return apiClient<OwnerLoginResponse>('/api/v1/auth/owner-login', {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+}
+
+/**
+ * Switches the active shop for the authenticated owner on the backend.
+ * Returns a new shop-scoped JWT.
+ */
+export async function switchShopApi(request: SwitchShopRequest): Promise<SwitchShopResponse> {
+  return apiClient<SwitchShopResponse>('/api/v1/auth/switch-shop', {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+}
+
+/**
+ * Creates an additional shop for the authenticated owner.
+ * Does NOT send ownerId (the backend extracts owner from the JWT).
+ */
+export async function createShopApi(request: CreateShopRequest): Promise<CloudShopDto> {
+  return apiClient<CloudShopDto>('/api/v1/shops', {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+}
+
+/**
+ * Retrieves all shops owned by the authenticated owner from the backend.
+ */
+export async function getOwnedShopsApi(): Promise<CloudShopDto[]> {
+  return apiClient<CloudShopDto[]>('/api/v1/shops', {
+    method: 'GET',
+  });
+}
+

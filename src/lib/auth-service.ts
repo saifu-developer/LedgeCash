@@ -1,7 +1,17 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { apiClient, setAuthToken, ApiError, onUnauthorized } from '@/lib/api-client';
+import {
+  apiClient,
+  getAuthToken,
+  setAuthToken,
+  ApiError,
+  onUnauthorized,
+  loginOwnerApi,
+  switchShopApi,
+  createShopApi,
+  getOwnedShopsApi,
+} from '@/lib/api-client';
 import { setCurrentProfile, setActiveShopId, getActiveShopId, getCurrentProfile } from '@/session/current-profile';
-import { createShop } from '@/store/shops';
+import { createShop, upsertShops, getShopById, getShopsByOwner } from '@/store/shops';
 import {
   getLoginProfile,
   setupOwner,
@@ -12,9 +22,26 @@ import {
   setWorkerStatus,
   changeWorkerPin,
   isValidPin,
+  getUsers,
 } from '@/store/users';
 import type { Profile, UserRole, UserStatus } from '@/types/profile';
+import type { Shop } from '@/types/shop';
 import { triggerSync } from '@/lib/sync-service';
+import {
+  parseJwtPayload,
+  getShopIdFromJwt,
+  assertJwtShopConsistency,
+  verifyJwtShopConsistency,
+} from '@/lib/jwt-utils';
+
+export {
+  parseJwtPayload,
+  getShopIdFromJwt,
+  assertJwtShopConsistency,
+  verifyJwtShopConsistency,
+};
+
+
 
 export const STORAGE_KEY_LAST_WORKER_SHOP = 'ledgecash_last_worker_shop';
 
@@ -514,4 +541,477 @@ export async function updateWorkerPinWithCloud(
   const updated = await changeWorkerPin(workerId, newPin);
   return { profile: updated, isCloudUpdated: false };
 }
+
+/* ====================================================================
+   MULTI-SHOP CLOUD INTEGRATION (PHASE 3)
+   ==================================================================== */
+
+export interface OwnerCloudLoginParams {
+  phone: string;
+  pin: string;
+}
+
+export interface OwnerCloudLoginResult {
+  profile: Profile;
+  activeShopId: string;
+  shops: Shop[];
+  token: string | null;
+  isCloudAuthenticated: boolean;
+}
+
+/**
+ * PHASE 3.2 — OWNER LOGIN
+ * Authenticates an owner with the backend multi-shop owner-login endpoint.
+ *
+ * Invariant:
+ * 1. Persists JWT securely in SecureStore via setAuthToken.
+ * 2. Caches authenticated user credentials in user store (PIN in SecureStore only).
+ * 3. Hydrates local SQLite shops store with authoritative server-returned owned shops.
+ * 4. Sets initial active shop to authoritative activeShopId selected by server.
+ * 5. Falls back to local offline PIN authentication if server is unreachable.
+ */
+export async function loginOwnerWithCloud(
+  params: OwnerCloudLoginParams
+): Promise<OwnerCloudLoginResult> {
+  const trimmedPhone = params.phone?.trim();
+  if (!trimmedPhone) {
+    throw new Error('Phone number is required.');
+  }
+  if (!params.pin || !isValidPin(params.pin)) {
+    throw new Error('PIN must be exactly 4 digits.');
+  }
+
+  try {
+    const res = await loginOwnerApi({
+      phone: trimmedPhone,
+      pin: params.pin,
+    });
+
+    if (!res || !res.token || !res.userId || !res.activeShopId) {
+      throw new Error('Invalid response received from authentication server.');
+    }
+
+    // 1. Persist the JWT using the existing SecureStore mechanism
+    await setAuthToken(res.token);
+
+    // 2. Map cloud shops authoritative snapshot
+    const cloudShops: Shop[] = (res.shops || []).map((s) => ({
+      id: s.id,
+      name: s.name,
+      ownerId: s.ownerId || res.userId,
+      createdAt: typeof s.createdAt === 'string' ? s.createdAt : new Date(s.createdAt).toISOString(),
+    }));
+
+    // Ensure the server-selected active shop is present in the local shop list
+    if (res.activeShopId && !cloudShops.some((s) => s.id === res.activeShopId)) {
+      cloudShops.push({
+        id: res.activeShopId,
+        name: res.activeShopName || 'My Shop',
+        ownerId: res.userId,
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    // 3. Hydrate local shop store with the authoritative cloud-owned shop list
+    await upsertShops(cloudShops);
+
+    // 4. Cache/update the owner profile in users store (stores PIN in SecureStore, never in AsyncStorage)
+    await cacheAuthenticatedUser({
+      id: res.userId,
+      name: res.name,
+      role: 'OWNER',
+      status: 'ACTIVE',
+      pin: params.pin,
+      shopId: res.activeShopId,
+      phone: res.phone || trimmedPhone,
+    });
+
+    // 5. Establish current profile and active shop
+    const ownerProfile: Profile = {
+      id: res.userId,
+      name: res.name,
+      role: 'OWNER',
+      status: 'ACTIVE',
+      createdAt: new Date().toISOString(),
+      shopId: res.activeShopId,
+      phone: res.phone || trimmedPhone,
+    };
+    setCurrentProfile(ownerProfile);
+    setActiveShopId(res.activeShopId);
+
+    // 6. Verify consistency between stored JWT and activeShopId
+    assertJwtShopConsistency(res.token, res.activeShopId);
+
+    return {
+      profile: ownerProfile,
+      activeShopId: res.activeShopId,
+      shops: cloudShops,
+      token: res.token,
+      isCloudAuthenticated: true,
+    };
+  } catch (err: any) {
+    if (err instanceof ApiError) {
+      if (err.status === 400) {
+        throw new Error('Incorrect phone number or PIN. Please try again.');
+      }
+      if (err.status === 404) {
+        throw new Error('Owner account not found. Please register first.');
+      }
+      if (err.status === 0 || err.status === 408) {
+        const fallback = await attemptOwnerOfflineLogin(trimmedPhone, params.pin);
+        if (fallback) {
+          return fallback;
+        }
+        throw new Error('Unable to connect to server. Please check your internet connection.');
+      }
+      throw new Error(err.message || 'Owner login failed. Please try again.');
+    }
+
+    // Fallback if network connection failed without an HTTP status code
+    if (
+      err?.name === 'TypeError' ||
+      err?.message?.includes('network') ||
+      err?.message?.includes('fetch')
+    ) {
+      const fallback = await attemptOwnerOfflineLogin(trimmedPhone, params.pin);
+      if (fallback) {
+        return fallback;
+      }
+    }
+
+    throw err;
+  }
+}
+
+async function attemptOwnerOfflineLogin(
+  phone: string,
+  pin: string
+): Promise<OwnerCloudLoginResult | null> {
+  const users = getUsers();
+  const normalizedInput = phone.replace(/\D/g, '');
+  const localOwner = users.find(
+    (u) =>
+      u.role === 'OWNER' &&
+      u.phone &&
+      (u.phone.trim() === phone || u.phone.replace(/\D/g, '') === normalizedInput)
+  );
+
+  if (!localOwner) {
+    return null;
+  }
+
+  const isValid = verifyPin(localOwner.id, pin);
+  if (!isValid) {
+    throw new Error('Incorrect PIN. Please try again.');
+  }
+
+  const ownedShops = getShopsByOwner(localOwner.id);
+  const activeShopId = ownedShops.length > 0 ? ownedShops[0].id : localOwner.shopId || '';
+
+  const publicProfile: Profile = {
+    id: localOwner.id,
+    name: localOwner.name,
+    role: 'OWNER',
+    status: localOwner.status,
+    createdAt: localOwner.createdAt,
+    shopId: activeShopId,
+    phone: localOwner.phone,
+  };
+
+  setCurrentProfile(publicProfile);
+  if (activeShopId) {
+    try {
+      setActiveShopId(activeShopId);
+    } catch {}
+  }
+
+  return {
+    profile: publicProfile,
+    activeShopId,
+    shops: ownedShops,
+    token: null,
+    isCloudAuthenticated: false,
+  };
+}
+
+export interface SwitchShopResult {
+  success: boolean;
+  shopId: string;
+  token: string;
+  profile: Profile;
+}
+
+/**
+ * PHASE 3.4 — SWITCH SHOP
+ * Switches the authenticated OWNER to another owned shop via the backend.
+ *
+ * CRITICAL SECURITY RULE:
+ * Safe execution order:
+ * 1. Request server switch: POST /api/v1/auth/switch-shop
+ * 2. Receive new shop-scoped JWT
+ * 3. Validate response matches requested target shop
+ * 4. Persist new JWT through SecureStore
+ * 5. Update activeShopId ONLY AFTER new JWT is securely stored
+ *
+ * The frontend NEVER enters activeShopId = Shop B while JWT.shopId = Shop A.
+ */
+export async function switchShopWithCloud(shopId: string): Promise<SwitchShopResult> {
+  const current = getCurrentProfile();
+  if (!current || current.role !== 'OWNER') {
+    throw new Error('Only an authenticated shop owner can switch shops.');
+  }
+
+  const targetShopId = shopId?.trim().toUpperCase();
+  if (!targetShopId) {
+    throw new Error('Target shop ID is required.');
+  }
+
+  // 1. Verify that target shop is owned locally by this owner if known
+  const ownedShops = getShopsByOwner(current.id);
+  const targetShop = ownedShops.find((s) => s.id === targetShopId) || getShopById(targetShopId);
+  if (targetShop && targetShop.ownerId !== current.id) {
+    throw new Error(`Shop "${targetShopId}" is not owned by the current owner.`);
+  }
+
+  // 2. Send: POST /api/v1/auth/switch-shop
+  const res = await switchShopApi({ shopId: targetShopId });
+
+  // 3. Receive NEW JWT and validate response
+  if (!res || !res.token) {
+    throw new Error('Server failed to return a new authentication token.');
+  }
+
+  if (res.shopId !== targetShopId) {
+    throw new Error(
+      `Server returned token for unexpected shop "${res.shopId}" instead of requested "${targetShopId}".`
+    );
+  }
+
+  const tokenShopId = getShopIdFromJwt(res.token);
+  if (tokenShopId && tokenShopId !== targetShopId) {
+    throw new Error(
+      `Token claims shopId "${tokenShopId}" does not match requested target "${targetShopId}".`
+    );
+  }
+
+  // 4. Ensure shop is present in local store so setActiveShopId authorization check succeeds
+  if (!targetShop) {
+    await upsertShops([
+      {
+        id: targetShopId,
+        name: res.shopName || targetShopId,
+        ownerId: current.id,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+  }
+
+  // 5. Persist the new JWT through SecureStore
+  // CRITICAL SECURITY RULE: Persist token FIRST before changing activeShopId!
+  await setAuthToken(res.token);
+
+  // 6. Update local active shop only AFTER the new JWT is successfully stored
+  setActiveShopId(targetShopId);
+
+  // 7. Update current profile session
+  const updatedProfile: Profile = {
+    ...current,
+    shopId: targetShopId,
+  };
+  setCurrentProfile(updatedProfile);
+
+  // Trigger sync for the new active shop
+  triggerSync(300);
+
+  return {
+    success: true,
+    shopId: targetShopId,
+    token: res.token,
+    profile: updatedProfile,
+  };
+}
+
+/**
+ * PHASE 3.5 — CREATE SHOP
+ * Creates an additional shop for the authenticated owner on the backend.
+ * Persists the created shop into the local shop store without changing activeShopId.
+ * Does NOT send ownerId (the backend extracts owner identity from the JWT).
+ */
+export async function createShopWithCloud(name: string): Promise<Shop> {
+  const current = getCurrentProfile();
+  if (!current || current.role !== 'OWNER') {
+    throw new Error('Only an authenticated shop owner can create a shop.');
+  }
+
+  const trimmedName = name?.trim();
+  if (!trimmedName) {
+    throw new Error('Shop name is required.');
+  }
+
+  // 1. Call POST /api/v1/shops (Do NOT send ownerId)
+  const res = await createShopApi({ name: trimmedName });
+
+  if (!res || !res.id || !res.name) {
+    throw new Error('Invalid response received from server when creating shop.');
+  }
+
+  // 2. Receive authoritative Shop object from backend
+  const createdShop: Shop = {
+    id: res.id,
+    name: res.name,
+    ownerId: res.ownerId || current.id,
+    createdAt: typeof res.createdAt === 'string' ? res.createdAt : new Date(res.createdAt).toISOString(),
+  };
+
+  // 3. Persist/upsert into local shop store
+  await upsertShops([createdShop]);
+
+  // 4. Do NOT automatically change activeShopId (user remains in current shop)
+  return createdShop;
+}
+
+/**
+ * PHASE 3.6 — GET OWNED SHOPS
+ * Retrieves all shops owned by the authenticated owner from the backend.
+ * Hydrates local shop store with authoritative cloud shops.
+ */
+export async function fetchOwnedShopsWithCloud(): Promise<Shop[]> {
+  const current = getCurrentProfile();
+  if (!current || current.role !== 'OWNER') {
+    throw new Error('Only an authenticated shop owner can fetch owned shops.');
+  }
+
+  // 1. Call GET /api/v1/shops
+  const res = await getOwnedShopsApi();
+
+  // 2. Map and filter to ensure only owned shops are processed
+  const cloudShops: Shop[] = (res || [])
+    .filter((s) => !s.ownerId || s.ownerId === current.id)
+    .map((s) => ({
+      id: s.id,
+      name: s.name,
+      ownerId: current.id,
+      createdAt: typeof s.createdAt === 'string' ? s.createdAt : new Date(s.createdAt).toISOString(),
+    }));
+
+  // 3. Update local shop store
+  await upsertShops(cloudShops);
+
+  // 4. Recovery: If current active shop is no longer in owned shops, recover to first owned shop
+  const currentActive = getActiveShopId();
+  if (currentActive) {
+    const stillOwned = cloudShops.some((s) => s.id === currentActive);
+    if (!stillOwned && cloudShops.length > 0) {
+      setActiveShopId(cloudShops[0].id);
+    }
+  }
+
+  return cloudShops;
+}
+
+export interface SessionRestoreResult {
+  restored: boolean;
+  profile: Profile | null;
+  activeShopId: string | null;
+}
+
+/**
+ * PHASE 4 — SESSION RESTORATION
+ * Restores an existing authenticated session from SecureStore JWT on app launch.
+ * Enforces the strict invariant:
+ *   activeShopId === JWT.shopId
+ * Never allows the app to start in an inconsistent state:
+ *   JWT = Shop A, activeShopId = Shop B
+ */
+export async function restoreSession(): Promise<SessionRestoreResult> {
+  try {
+    const token = await getAuthToken();
+    if (!token) {
+      return { restored: false, profile: null, activeShopId: null };
+    }
+
+    const payload = parseJwtPayload(token);
+    if (!payload || !payload.sub || !payload.shopId || !payload.role) {
+      // Corrupt or unrecognized token -> clear session
+      await logout();
+      return { restored: false, profile: null, activeShopId: null };
+    }
+
+    const userId = payload.sub as string;
+    const jwtShopId = (payload.shopId as string).trim().toUpperCase();
+    const role: UserRole = payload.role === 'OWNER' ? 'OWNER' : 'WORKER';
+
+    if (role === 'OWNER') {
+      const users = getUsers();
+      const localOwner = users.find((u) => u.id === userId && u.role === 'OWNER');
+
+      // Ensure the shop is present in SQLite shops store
+      const shop = getShopById(jwtShopId);
+      if (!shop) {
+        await upsertShops([
+          {
+            id: jwtShopId,
+            name: payload.shopName || jwtShopId,
+            ownerId: userId,
+            createdAt: new Date().toISOString(),
+          },
+        ]);
+      }
+
+      const ownerProfile: Profile = {
+        id: userId,
+        name: localOwner?.name || payload.name || 'Owner',
+        role: 'OWNER',
+        status: 'ACTIVE',
+        createdAt: localOwner?.createdAt || new Date().toISOString(),
+        shopId: jwtShopId,
+        phone: localOwner?.phone || payload.phone,
+      };
+
+      setCurrentProfile(ownerProfile);
+      setActiveShopId(jwtShopId);
+
+      // Verify invariant: JWT shopId must match activeShopId exactly
+      assertJwtShopConsistency(token, jwtShopId);
+
+      // Asynchronously refresh owned shops snapshot in the background if online
+      fetchOwnedShopsWithCloud().catch(() => {});
+
+      return {
+        restored: true,
+        profile: ownerProfile,
+        activeShopId: jwtShopId,
+      };
+    } else {
+      // Worker session restoration
+      const users = getUsers();
+      const localWorker = users.find((u) => u.id === userId && u.role === 'WORKER');
+
+      const workerProfile: Profile = {
+        id: userId,
+        name: localWorker?.name || payload.name || 'Worker',
+        role: 'WORKER',
+        status: 'ACTIVE',
+        createdAt: localWorker?.createdAt || new Date().toISOString(),
+        shopId: jwtShopId,
+        phone: localWorker?.phone || payload.phone,
+      };
+
+      setCurrentProfile(workerProfile);
+      setActiveShopId(jwtShopId);
+
+      return {
+        restored: true,
+        profile: workerProfile,
+        activeShopId: jwtShopId,
+      };
+    }
+  } catch (err) {
+    console.warn('Session restoration encountered error:', err);
+    await logout().catch(() => {});
+    return { restored: false, profile: null, activeShopId: null };
+  }
+}
+
+
 

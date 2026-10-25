@@ -15,13 +15,13 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { BrandColors } from '@/constants/theme';
+import { createShopWithCloud, switchShopWithCloud } from '@/lib/auth-service';
 import {
   getActiveShopId,
   getCurrentProfile,
-  setActiveShopId,
   setCurrentProfile,
 } from '@/session/current-profile';
-import { createShop, getShopsByOwner, useShopStore } from '@/store/shops';
+import { getShopsByOwner, useShopStore } from '@/store/shops';
 import { useUserStore } from '@/store/users';
 import type { Shop } from '@/types/shop';
 
@@ -42,7 +42,9 @@ export default function ShopSetupScreen() {
 
   const [shopName, setShopName] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [successNotice, setSuccessNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [switchingShopId, setSwitchingShopId] = useState<string | null>(null);
 
   // Auto-login session profile if not already set
   if (ownerUser && (!currentProfile || currentProfile.id !== ownerUser.id)) {
@@ -50,20 +52,19 @@ export default function ShopSetupScreen() {
   }
 
   async function handleSelectShop(shop: Shop) {
+    if (switchingShopId) return;
+    setSwitchingShopId(shop.id);
+    setError(null);
     try {
-      setActiveShopId(shop.id);
+      await switchShopWithCloud(shop.id);
       router.replace('/owner');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to select shop.');
+    } catch (e: any) {
+      setError(e?.message || 'Failed to select shop.');
+      setSwitchingShopId(null);
     }
   }
 
   async function handleCreateShop() {
-    if (!ownerId) {
-      setError('Owner account not found. Please log in or create an owner account.');
-      return;
-    }
-
     const trimmed = shopName.trim();
     if (!trimmed) {
       setError('Please enter a shop name.');
@@ -72,22 +73,29 @@ export default function ShopSetupScreen() {
 
     setSubmitting(true);
     setError(null);
+    setSuccessNotice(null);
 
     try {
-      // createShop automatically invokes generateUniqueShopId (LC-XXXXXX)
-      // and persists the record into SQLite tied to ownerId
-      const newShop = await createShop(ownerId, trimmed);
+      // Create shop via cloud API without sending ownerId
+      const newShop = await createShopWithCloud(trimmed);
 
-      // Set as active shop
-      setActiveShopId(newShop.id);
+      // If owner has no previous active shops, set it as active and launch dashboard
+      if (!currentActiveShopId || ownedShops.length === 0) {
+        await switchShopWithCloud(newShop.id);
+        router.replace('/owner');
+        return;
+      }
 
-      // Transition to Owner Dashboard
-      router.replace('/owner');
-    } catch (e) {
+      // Otherwise, preserve existing active shop and prompt user
+      setShopName('');
       setSubmitting(false);
-      setError(e instanceof Error ? e.message : 'Failed to create shop.');
+      setSuccessNotice(`Shop "${newShop.name}" created! Tap below to switch, or return to dashboard.`);
+    } catch (e: any) {
+      setSubmitting(false);
+      setError(e?.message || 'Failed to create shop.');
     }
   }
+
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -127,16 +135,19 @@ export default function ShopSetupScreen() {
               <View style={styles.shopList}>
                 {ownedShops.map((shop) => {
                   const isActive = shop.id === currentActiveShopId;
+                  const isSwitchingThis = switchingShopId === shop.id;
+
                   return (
                     <Pressable
                       key={shop.id}
                       accessibilityRole="button"
                       accessibilityLabel={`Open ${shop.name}`}
+                      disabled={Boolean(switchingShopId)}
                       onPress={() => handleSelectShop(shop)}
                       style={({ pressed }) => [
                         styles.shopCard,
                         isActive && styles.activeShopCard,
-                        pressed && styles.pressed,
+                        (pressed || isSwitchingThis) && styles.pressed,
                       ]}>
                       <View style={styles.shopCardLeft}>
                         <Text style={styles.shopCardName}>{shop.name}</Text>
@@ -145,9 +156,13 @@ export default function ShopSetupScreen() {
                         </View>
                       </View>
                       <View style={styles.shopCardRight}>
-                        <Text style={styles.selectText}>
-                          {isActive ? 'Active →' : 'Select →'}
-                        </Text>
+                        {isSwitchingThis ? (
+                          <ActivityIndicator size="small" color={BrandColors.navy} />
+                        ) : (
+                          <Text style={styles.selectText}>
+                            {isActive ? 'Active →' : 'Select →'}
+                          </Text>
+                        )}
                       </View>
                     </Pressable>
                   );
@@ -172,6 +187,7 @@ export default function ShopSetupScreen() {
               value={shopName}
               onChangeText={(text) => {
                 setError(null);
+                setSuccessNotice(null);
                 setShopName(text);
               }}
               autoCapitalize="words"
@@ -179,22 +195,26 @@ export default function ShopSetupScreen() {
             />
 
             {error ? <Text style={styles.errorText}>{error}</Text> : null}
+            {successNotice ? <Text style={styles.successText}>{successNotice}</Text> : null}
 
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Create Shop and Open Dashboard"
+              accessibilityLabel="Create Shop"
               onPress={handleCreateShop}
               disabled={submitting}
               style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}>
               {submitting ? (
                 <ActivityIndicator size="small" color="#FFFFFF" />
               ) : (
-                <Text style={styles.primaryButtonText}>Create Shop & Open Dashboard</Text>
+                <Text style={styles.primaryButtonText}>
+                  {ownedShops.length > 0 ? 'Create Shop' : 'Create Shop & Open Dashboard'}
+                </Text>
               )}
             </Pressable>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
     </SafeAreaView>
   );
 }
@@ -360,7 +380,15 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     textAlign: 'center',
   },
+  successText: {
+    color: '#15803D',
+    fontSize: 14,
+    fontWeight: '500',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
   pressed: {
     opacity: 0.85,
   },
 });
+

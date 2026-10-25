@@ -1,8 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
   Modal,
   Pressable,
   ScrollView,
@@ -14,8 +15,11 @@ import {
 import { AppCard } from '@/components/ui/AppCard';
 import { BrandColors } from '@/constants/theme';
 import {
+  fetchOwnedShopsWithCloud,
+  switchShopWithCloud,
+} from '@/lib/auth-service';
+import {
   getActiveShopId,
-  setActiveShopId,
   useCurrentProfile,
 } from '@/session/current-profile';
 import { getShopsByOwner, useShopStore } from '@/store/shops';
@@ -32,8 +36,24 @@ export function ShopSwitcherModal({ visible, onClose }: ShopSwitcherModalProps) 
   useShopStore(); // Subscribe to reactive shop updates
   const activeShopId = getActiveShopId();
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
+  const [switchingShopId, setSwitchingShopId] = useState<string | null>(null);
+  const [switchError, setSwitchError] = useState<string | null>(null);
 
-  if (!profile) return null;
+  // Refresh owned shops list from cloud whenever switcher opens
+  useEffect(() => {
+    if (visible && profile?.role === 'OWNER') {
+      fetchOwnedShopsWithCloud().catch(() => {});
+    }
+  }, [visible, profile]);
+
+  function handleClose() {
+    setSwitchError(null);
+    onClose();
+  }
+
+  // Workers must NEVER see or use the owner shop switcher
+  if (!profile || profile.role !== 'OWNER') return null;
   const shops = getShopsByOwner(profile.id);
 
   async function handleCopy(code: string) {
@@ -42,9 +62,29 @@ export function ShopSwitcherModal({ visible, onClose }: ShopSwitcherModalProps) 
     setTimeout(() => setCopiedId(null), 2000);
   }
 
-  function handleSelectShop(shop: Shop) {
-    setActiveShopId(shop.id);
-    onClose();
+
+  async function handleSelectShop(shop: Shop) {
+    if (switching) return;
+    if (shop.id === activeShopId) {
+      onClose();
+      return;
+    }
+
+    setSwitching(true);
+    setSwitchingShopId(shop.id);
+    setSwitchError(null);
+
+    try {
+      // 1. Call server-side switch
+      // 2. Persists new JWT to SecureStore before setting activeShopId
+      await switchShopWithCloud(shop.id);
+      onClose();
+    } catch (err: any) {
+      setSwitchError(err?.message || 'Failed to switch shop. Please try again.');
+    } finally {
+      setSwitching(false);
+      setSwitchingShopId(null);
+    }
   }
 
   function handleGoToSettings() {
@@ -55,14 +95,15 @@ export function ShopSwitcherModal({ visible, onClose }: ShopSwitcherModalProps) 
     });
   }
 
+
   return (
     <Modal
       visible={visible}
       transparent
       animationType="fade"
-      onRequestClose={onClose}>
+      onRequestClose={handleClose}>
       <View style={styles.backdrop}>
-        <Pressable style={styles.scrim} onPress={onClose} />
+        <Pressable style={styles.scrim} onPress={handleClose} />
         <View style={styles.sheetContainer}>
           <AppCard style={styles.sheetCard}>
             {/* Header */}
@@ -81,11 +122,20 @@ export function ShopSwitcherModal({ visible, onClose }: ShopSwitcherModalProps) 
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Close shop switcher"
-                onPress={onClose}
+                onPress={handleClose}
                 style={({ pressed }) => [styles.closeBtn, pressed && styles.pressed]}>
                 <Ionicons name="close" size={20} color="#6B7280" />
               </Pressable>
             </View>
+
+
+            {/* Switch Error Banner */}
+            {switchError ? (
+              <View style={styles.errorBanner}>
+                <Ionicons name="alert-circle" size={16} color="#DC2626" />
+                <Text style={styles.errorText}>{switchError}</Text>
+              </View>
+            ) : null}
 
             {/* Shop List */}
             <ScrollView
@@ -94,16 +144,19 @@ export function ShopSwitcherModal({ visible, onClose }: ShopSwitcherModalProps) 
               showsVerticalScrollIndicator={false}>
               {shops.map((shop) => {
                 const isActive = shop.id === activeShopId;
+                const isTargetSwitch = switching && switchingShopId === shop.id;
+
                 return (
                   <Pressable
                     key={shop.id}
                     accessibilityRole="button"
                     accessibilityLabel={`Select store ${shop.name}`}
+                    disabled={switching}
                     onPress={() => handleSelectShop(shop)}
                     style={({ pressed }) => [
                       styles.shopCard,
                       isActive && styles.activeShopCard,
-                      pressed && styles.pressed,
+                      (pressed || isTargetSwitch) && styles.pressed,
                     ]}>
                     <View style={styles.shopCardLeft}>
                       <View
@@ -136,35 +189,42 @@ export function ShopSwitcherModal({ visible, onClose }: ShopSwitcherModalProps) 
                       </View>
                     </View>
 
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`Copy shop code ${shop.id}`}
-                      onPress={(e) => {
-                        e.stopPropagation();
-                        void handleCopy(shop.id);
-                      }}
-                      style={({ pressed }) => [
-                        styles.copyBadge,
-                        copiedId === shop.id && styles.copyBadgeSuccess,
-                        pressed && styles.pressed,
-                      ]}>
-                      <Ionicons
-                        name={copiedId === shop.id ? 'checkmark' : 'copy-outline'}
-                        size={13}
-                        color={copiedId === shop.id ? '#15803D' : BrandColors.navy}
-                      />
-                      <Text
-                        style={[
-                          styles.copyBadgeText,
-                          copiedId === shop.id && styles.copyBadgeTextSuccess,
+                    {isTargetSwitch ? (
+                      <View style={styles.switchingBox}>
+                        <ActivityIndicator size="small" color={BrandColors.navy} />
+                      </View>
+                    ) : (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Copy shop code ${shop.id}`}
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          void handleCopy(shop.id);
+                        }}
+                        style={({ pressed }) => [
+                          styles.copyBadge,
+                          copiedId === shop.id && styles.copyBadgeSuccess,
+                          pressed && styles.pressed,
                         ]}>
-                        {copiedId === shop.id ? 'Copied' : 'Copy'}
-                      </Text>
-                    </Pressable>
+                        <Ionicons
+                          name={copiedId === shop.id ? 'checkmark' : 'copy-outline'}
+                          size={13}
+                          color={copiedId === shop.id ? '#15803D' : BrandColors.navy}
+                        />
+                        <Text
+                          style={[
+                            styles.copyBadgeText,
+                            copiedId === shop.id && styles.copyBadgeTextSuccess,
+                          ]}>
+                          {copiedId === shop.id ? 'Copied' : 'Copy'}
+                        </Text>
+                      </Pressable>
+                    )}
                   </Pressable>
                 );
               })}
             </ScrollView>
+
 
             {/* Bottom Actions */}
             <View style={styles.footerRow}>
@@ -366,8 +426,33 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: BrandColors.navy,
   },
+  errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 12,
+  },
+  errorText: {
+    color: '#DC2626',
+    fontSize: 13,
+    fontWeight: '500',
+    flex: 1,
+  },
+  switchingBox: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   pressed: {
     opacity: 0.8,
     transform: [{ scale: 0.985 }],
   },
 });
+

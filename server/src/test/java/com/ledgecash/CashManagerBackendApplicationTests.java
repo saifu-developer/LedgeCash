@@ -17,6 +17,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -38,7 +39,13 @@ public class CashManagerBackendApplicationTests {
     private com.ledgecash.repository.UserRepository userRepository;
 
     @Autowired
+    private com.ledgecash.repository.ShopRepository shopRepository;
+
+    @Autowired
     private org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
+
+    @Autowired
+    private com.ledgecash.security.JwtTokenProvider jwtTokenProvider;
 
     @Test
     void contextLoads() {
@@ -788,6 +795,246 @@ public class CashManagerBackendApplicationTests {
                 "BCrypt password encoder must match the new PIN");
         assertFalse(passwordEncoder.matches("2222", savedWorker.getPinHash()),
                 "Old PIN must not match the new BCrypt hash");
+    }
+
+    @Test
+    @DisplayName("Verify Multi-Shop Repository Domain Foundation: Owner Multi-Shop Retrieval, Owner Isolation, and Worker Isolation")
+    void testMultiShopDomainFoundation() throws Exception {
+        // 1. Create Owner A and Owner B
+        String ownerIdA = UUID.randomUUID().toString();
+        String ownerIdB = UUID.randomUUID().toString();
+
+        com.ledgecash.model.Shop shopA1 = new com.ledgecash.model.Shop("LC-TST001", "Owner A Main Shop", ownerIdA);
+        com.ledgecash.model.Shop shopA2 = new com.ledgecash.model.Shop("LC-TST002", "Owner A Second Shop", ownerIdA);
+        com.ledgecash.model.Shop shopB1 = new com.ledgecash.model.Shop("LC-TST003", "Owner B Only Shop", ownerIdB);
+
+        shopRepository.saveAll(List.of(shopA1, shopA2, shopB1));
+
+        // 2. Verify Owner A -> multiple shops retrieval
+        List<com.ledgecash.model.Shop> ownerAShops = shopRepository.findByOwnerId(ownerIdA);
+        assertEquals(2, ownerAShops.size(), "Owner A must own exactly 2 shops");
+        assertTrue(ownerAShops.stream().anyMatch(s -> s.getId().equals("LC-TST001")));
+        assertTrue(ownerAShops.stream().anyMatch(s -> s.getId().equals("LC-TST002")));
+
+        List<com.ledgecash.model.Shop> ownerBShops = shopRepository.findByOwnerId(ownerIdB);
+        assertEquals(1, ownerBShops.size(), "Owner B must own exactly 1 shop");
+        assertEquals("LC-TST003", ownerBShops.get(0).getId());
+
+        // 3. Verify Owner Isolation via findByIdAndOwnerId
+        Optional<com.ledgecash.model.Shop> foundA1 = shopRepository.findByIdAndOwnerId("LC-TST001", ownerIdA);
+        assertTrue(foundA1.isPresent(), "Owner A must be able to retrieve Shop A1");
+        assertEquals("Owner A Main Shop", foundA1.get().getName());
+
+        Optional<com.ledgecash.model.Shop> foundA2 = shopRepository.findByIdAndOwnerId("LC-TST002", ownerIdA);
+        assertTrue(foundA2.isPresent(), "Owner A must be able to retrieve Shop A2");
+
+        // Owner A cannot resolve Shop B1 (belonging to Owner B)
+        Optional<com.ledgecash.model.Shop> crossOwnerShop = shopRepository.findByIdAndOwnerId("LC-TST003", ownerIdA);
+        assertFalse(crossOwnerShop.isPresent(), "Owner A must NOT be able to resolve Shop B1 belonging to Owner B");
+
+        // Owner B cannot resolve Shop A1 or A2 (belonging to Owner A)
+        assertFalse(shopRepository.findByIdAndOwnerId("LC-TST001", ownerIdB).isPresent(),
+                "Owner B must NOT be able to resolve Shop A1");
+        assertFalse(shopRepository.findByIdAndOwnerId("LC-TST002", ownerIdB).isPresent(),
+                "Owner B must NOT be able to resolve Shop A2");
+
+        // Non-existent shop ID with valid ownerId returns empty
+        assertFalse(shopRepository.findByIdAndOwnerId("LC-NONEXIST", ownerIdA).isPresent());
+
+        // 4. Verify Existing Worker Isolation across shops
+        String workerIdA = UUID.randomUUID().toString();
+        com.ledgecash.model.User workerA = new com.ledgecash.model.User(
+                workerIdA,
+                "Worker in Shop A1",
+                "9811999001",
+                passwordEncoder.encode("1111"),
+                com.ledgecash.model.UserRole.WORKER,
+                com.ledgecash.model.UserStatus.ACTIVE,
+                "LC-TST001"
+        );
+        userRepository.save(workerA);
+
+        // Worker A can be found via Shop A1
+        Optional<com.ledgecash.model.User> workerFoundInA1 = userRepository.findByIdAndShopId(workerIdA, "LC-TST001");
+        assertTrue(workerFoundInA1.isPresent(), "Worker must be found under their designated Shop A1");
+        assertTrue(userRepository.findByPhoneAndShopId("9811999001", "LC-TST001").isPresent(),
+                "Worker must be resolvable by phone in Shop A1");
+
+        // Worker A cannot be resolved through Shop A2 (even though owned by same owner)
+        Optional<com.ledgecash.model.User> workerFoundInA2 = userRepository.findByIdAndShopId(workerIdA, "LC-TST002");
+        assertFalse(workerFoundInA2.isPresent(), "Worker in Shop A1 must NOT be resolvable through Shop A2");
+        assertFalse(userRepository.findByPhoneAndShopId("9811999001", "LC-TST002").isPresent(),
+                "Worker in Shop A1 must NOT be resolvable by phone through Shop A2");
+
+        // Worker A cannot be resolved through Shop B1 (different owner)
+        Optional<com.ledgecash.model.User> workerFoundInB1 = userRepository.findByIdAndShopId(workerIdA, "LC-TST003");
+        assertFalse(workerFoundInB1.isPresent(), "Worker in Shop A1 must NOT be resolvable through Shop B1");
+    }
+
+    @Test
+    @DisplayName("Phase 2: Multi-Shop Backend API Tests (Owner Login, Multi-Shop Creation, Shop Switching, Role Guard & Isolation)")
+    void testMultiShopBackendApis() throws Exception {
+        // --- Setup Owner A ---
+        RegisterOwnerRequest ownerAReq = new RegisterOwnerRequest("Rohan Verma", "9811199001", "1234", "Rohan Kirana A");
+        MvcResult ownerARes = mockMvc.perform(post("/api/v1/auth/register-owner")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(ownerAReq)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        JsonNode ownerAJson = objectMapper.readTree(ownerARes.getResponse().getContentAsString());
+        String ownerAToken = ownerAJson.get("token").asText();
+        String ownerAId = ownerAJson.get("userId").asText();
+        String shopA1Id = ownerAJson.get("shopId").asText();
+
+        // --- Setup Owner B ---
+        RegisterOwnerRequest ownerBReq = new RegisterOwnerRequest("Pooja Patel", "9811199002", "5678", "Pooja Stores B");
+        MvcResult ownerBRes = mockMvc.perform(post("/api/v1/auth/register-owner")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(ownerBReq)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        JsonNode ownerBJson = objectMapper.readTree(ownerBRes.getResponse().getContentAsString());
+        String ownerBToken = ownerBJson.get("token").asText();
+        String ownerBId = ownerBJson.get("userId").asText();
+        String shopB1Id = ownerBJson.get("shopId").asText();
+
+        // --- TEST 1: Owner login with one shop ---
+        OwnerLoginRequest login1Req = new OwnerLoginRequest("9811199001", "1234");
+        MvcResult login1Res = mockMvc.perform(post("/api/v1/auth/owner-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(login1Req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.userId").value(ownerAId))
+                .andExpect(jsonPath("$.role").value("OWNER"))
+                .andExpect(jsonPath("$.activeShopId").value(shopA1Id))
+                .andExpect(jsonPath("$.shops.length()").value(1))
+                .andExpect(jsonPath("$.shops[0].id").value(shopA1Id))
+                .andReturn();
+        JsonNode login1Json = objectMapper.readTree(login1Res.getResponse().getContentAsString());
+        assertNotNull(login1Json.get("token").asText());
+        assertEquals(shopA1Id, jwtTokenProvider.getShopIdFromToken(login1Json.get("token").asText()));
+
+        // --- TEST 8: Owner creates additional shop (POST /api/v1/shops) ---
+        CreateShopRequest createShopReq = new CreateShopRequest("Rohan Electronics A2");
+        MvcResult createShopRes = mockMvc.perform(post("/api/v1/shops")
+                        .header("Authorization", "Bearer " + ownerAToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(createShopReq)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.name").value("Rohan Electronics A2"))
+                .andExpect(jsonPath("$.ownerId").value(ownerAId))
+                .andReturn();
+        JsonNode createShopJson = objectMapper.readTree(createShopRes.getResponse().getContentAsString());
+        String shopA2Id = createShopJson.get("id").asText();
+        assertNotNull(shopA2Id);
+        assertTrue(shopA2Id.startsWith("LC-"));
+
+        // Verify Shop A1 and Shop A2 both exist in DB with ownerId = ownerAId
+        assertEquals(2, shopRepository.findByOwnerId(ownerAId).size());
+
+        // --- TEST 9: Cross-owner creation protection ---
+        // Verify GET /api/v1/shops returns both shops for Owner A
+        mockMvc.perform(get("/api/v1/shops")
+                        .header("Authorization", "Bearer " + ownerAToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].ownerId").value(ownerAId))
+                .andExpect(jsonPath("$[1].ownerId").value(ownerAId));
+
+        // --- TEST 2: Owner login with multiple shops ---
+        MvcResult login2Res = mockMvc.perform(post("/api/v1/auth/owner-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(login1Req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.userId").value(ownerAId))
+                .andExpect(jsonPath("$.shops.length()").value(2))
+                .andReturn();
+        JsonNode login2Json = objectMapper.readTree(login2Res.getResponse().getContentAsString());
+        String login2Token = login2Json.get("token").asText();
+        assertNotNull(login2Token);
+        // Default shop is valid (matches one of Owner A's shops)
+        String activeShopId = login2Json.get("activeShopId").asText();
+        assertTrue(activeShopId.equals(shopA1Id) || activeShopId.equals(shopA2Id));
+
+        // --- TEST 3: Owner shop isolation ---
+        // Owner A's login must never contain Owner B's shop
+        for (JsonNode s : login2Json.get("shops")) {
+            assertNotEquals(shopB1Id, s.get("id").asText(), "Owner A must never see Owner B's shop");
+        }
+        // Owner B's login must never contain Owner A's shops
+        OwnerLoginRequest loginBReq = new OwnerLoginRequest("9811199002", "5678");
+        mockMvc.perform(post("/api/v1/auth/owner-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(loginBReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.userId").value(ownerBId))
+                .andExpect(jsonPath("$.shops.length()").value(1))
+                .andExpect(jsonPath("$.shops[0].id").value(shopB1Id));
+
+        // --- TEST 4: Valid shop switch (Owner A switches from Shop A1 to Shop A2) ---
+        SwitchShopRequest switchReq = new SwitchShopRequest(shopA2Id);
+        MvcResult switchRes = mockMvc.perform(post("/api/v1/auth/switch-shop")
+                        .header("Authorization", "Bearer " + ownerAToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(switchReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.shopId").value(shopA2Id))
+                .andExpect(jsonPath("$.shopName").value("Rohan Electronics A2"))
+                .andExpect(jsonPath("$.userId").value(ownerAId))
+                .andExpect(jsonPath("$.role").value("OWNER"))
+                .andReturn();
+        JsonNode switchJson = objectMapper.readTree(switchRes.getResponse().getContentAsString());
+        String newOwnerAToken = switchJson.get("token").asText();
+        assertNotNull(newOwnerAToken);
+        assertNotEquals(ownerAToken, newOwnerAToken, "New token must be issued");
+        assertEquals(shopA2Id, jwtTokenProvider.getShopIdFromToken(newOwnerAToken),
+                "Decoded JWT must contain Shop A2 ID");
+        assertEquals(ownerAId, jwtTokenProvider.getUserIdFromToken(newOwnerAToken));
+
+        // --- TEST 5 & IMPORTANT SECURITY TEST: Unauthorized shop switch ---
+        // Owner A attempts to switch to Shop B1 (owned by Owner B)
+        SwitchShopRequest attackReq = new SwitchShopRequest(shopB1Id);
+        mockMvc.perform(post("/api/v1/auth/switch-shop")
+                        .header("Authorization", "Bearer " + ownerAToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(attackReq)))
+                .andExpect(status().isForbidden());
+
+        // Verify with new token as well
+        mockMvc.perform(post("/api/v1/auth/switch-shop")
+                        .header("Authorization", "Bearer " + newOwnerAToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(attackReq)))
+                .andExpect(status().isForbidden());
+
+        // --- Setup Worker in Shop A1 ---
+        CreateWorkerRequest workerReq = new CreateWorkerRequest("Worker Vijay", "9811199003", "4321");
+        MvcResult workerRes = mockMvc.perform(post("/api/v1/auth/create-worker")
+                        .header("Authorization", "Bearer " + ownerAToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(workerReq)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        String workerToken = objectMapper.readTree(workerRes.getResponse().getContentAsString()).get("token").asText();
+
+        // --- TEST 6: Worker cannot switch shop ---
+        mockMvc.perform(post("/api/v1/auth/switch-shop")
+                        .header("Authorization", "Bearer " + workerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new SwitchShopRequest(shopA2Id))))
+                .andExpect(status().isForbidden());
+
+        // --- TEST 7: Worker cannot create shop ---
+        mockMvc.perform(post("/api/v1/shops")
+                        .header("Authorization", "Bearer " + workerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new CreateShopRequest("Worker Shop"))))
+                .andExpect(status().isForbidden());
+
+        // --- Additional check: Worker cannot view owner shops list ---
+        mockMvc.perform(get("/api/v1/shops")
+                        .header("Authorization", "Bearer " + workerToken))
+                .andExpect(status().isForbidden());
     }
 }
 

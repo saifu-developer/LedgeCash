@@ -3,8 +3,12 @@ package com.ledgecash.controller;
 import com.ledgecash.dto.AuthResponse;
 import com.ledgecash.dto.CreateWorkerRequest;
 import com.ledgecash.dto.LoginRequest;
+import com.ledgecash.dto.OwnerLoginRequest;
+import com.ledgecash.dto.OwnerLoginResponse;
 import com.ledgecash.dto.RegisterOwnerRequest;
 import com.ledgecash.dto.ShopWorkersResponse;
+import com.ledgecash.dto.SwitchShopRequest;
+import com.ledgecash.dto.SwitchShopResponse;
 import com.ledgecash.dto.UpdateWorkerPinRequest;
 import com.ledgecash.dto.UpdateWorkerStatusRequest;
 import com.ledgecash.dto.WorkerSummaryDto;
@@ -13,6 +17,7 @@ import com.ledgecash.service.AuthService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
@@ -41,6 +46,21 @@ public class AuthController {
     @PostMapping("/login")
     public ResponseEntity<AuthResponse> login(@Valid @RequestBody LoginRequest request) {
         AuthResponse response = authService.login(request);
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/owner-login")
+    public ResponseEntity<OwnerLoginResponse> ownerLogin(@Valid @RequestBody OwnerLoginRequest request) {
+        OwnerLoginResponse response = authService.ownerLogin(request);
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/switch-shop")
+    @PreAuthorize("hasRole('OWNER')")
+    public ResponseEntity<SwitchShopResponse> switchShop(
+            @Valid @RequestBody SwitchShopRequest request,
+            @AuthenticationPrincipal UserPrincipal currentUser) {
+        SwitchShopResponse response = authService.switchShop(request, currentUser);
         return ResponseEntity.ok(response);
     }
 

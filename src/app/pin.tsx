@@ -13,7 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { NumericKeypad, PinDots } from '@/components/ui/NumericKeypad';
 import { ResetConfirmModal } from '@/components/ui/ResetConfirmModal';
 import { BrandColors } from '@/constants/theme';
-import { loginWithCloudOrLocal } from '@/lib/auth-service';
+import { loginWithCloudOrLocal, loginOwnerWithCloud } from '@/lib/auth-service';
 import { resetAllAppData } from '@/lib/reset-app';
 import { getHomeHref } from '@/session/current-profile';
 import { getShopsByOwner } from '@/store/shops';
@@ -106,11 +106,21 @@ export default function PinScreen() {
 
     if (nextPin.length === PIN_LENGTH) {
       setLoading(true);
-      loginWithCloudOrLocal({
-        profileId: profile.id,
-        pin: nextPin,
-        shopId: shopId || profile.shopId,
-      })
+      const isOwner = profile.role === 'OWNER';
+
+      const loginAction =
+        isOwner && profile.phone
+          ? loginOwnerWithCloud({
+              phone: profile.phone,
+              pin: nextPin,
+            })
+          : loginWithCloudOrLocal({
+              profileId: profile.id,
+              pin: nextPin,
+              shopId: shopId || profile.shopId,
+            });
+
+      loginAction
         .then(() => {
           hasCompletedLogin.current = true;
           setLoading(false);
@@ -129,6 +139,7 @@ export default function PinScreen() {
           setPin('');
         });
     }
+
   }
 
   function handleBackspace() {

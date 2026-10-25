@@ -19,7 +19,7 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { BrandColors } from '@/constants/theme';
 import { exportDatabaseBackupJson } from '@/lib/export-utils';
-import { logout } from '@/lib/auth-service';
+import { logout, createShopWithCloud, switchShopWithCloud } from '@/lib/auth-service';
 import {
   getActiveShopId,
   setActiveShopId,
@@ -27,7 +27,7 @@ import {
   useCurrentProfile,
 } from '@/session/current-profile';
 import { reloadPersistedAudit, useAuditStore } from '@/store/audit';
-import { createShop, deleteShop, getShopsByOwner, updateShop, useShopStore } from '@/store/shops';
+import { deleteShop, getShopsByOwner, updateShop, useShopStore } from '@/store/shops';
 import { reloadPersistedTransactions, useTransactionStore } from '@/store/transactions';
 import { changeOwnerPin, isValidPin, removeWorkersForShop } from '@/store/users';
 import type { Shop } from '@/types/shop';
@@ -68,11 +68,13 @@ export function SettingsScreen() {
   const [pinError, setPinError] = useState<string | null>(null);
   const [pinLoading, setPinLoading] = useState(false);
 
-  // Create Shop State
+  // Create & Switch Shop State
   const [isCreatingShop, setIsCreatingShop] = useState(false);
   const [newShopName, setNewShopName] = useState('');
   const [createShopError, setCreateShopError] = useState<string | null>(null);
   const [creatingShopLoading, setCreatingShopLoading] = useState(false);
+  const [switchingShopId, setSwitchingShopId] = useState<string | null>(null);
+
 
   // Backup Export State
   const [exportingBackup, setExportingBackup] = useState(false);
@@ -198,7 +200,7 @@ export function SettingsScreen() {
   }
 
   async function handleCreateNewShop() {
-    if (!profile) return;
+    if (!profile || profile.role !== 'OWNER') return;
     const trimmed = newShopName.trim();
     if (!trimmed) {
       setCreateShopError('Please enter a shop name.');
@@ -208,17 +210,30 @@ export function SettingsScreen() {
     setCreatingShopLoading(true);
     setCreateShopError(null);
     try {
-      const created = await createShop(profile.id, trimmed);
-      setActiveShopId(created.id);
+      const created = await createShopWithCloud(trimmed);
       setNewShopName('');
       setIsCreatingShop(false);
       setCreatingShopLoading(false);
-      triggerNotice(`Shop "${created.name}" created and activated!`);
-    } catch (e) {
+      triggerNotice(`Shop "${created.name}" created! Tap Switch to activate.`);
+    } catch (e: any) {
       setCreatingShopLoading(false);
-      setCreateShopError(e instanceof Error ? e.message : 'Failed to create shop.');
+      setCreateShopError(e?.message || 'Failed to create shop.');
     }
   }
+
+  async function handleSwitchShop(shop: Shop) {
+    if (switchingShopId || shop.id === activeShopId) return;
+    setSwitchingShopId(shop.id);
+    try {
+      await switchShopWithCloud(shop.id);
+      triggerNotice(`Switched active shop to "${shop.name}"`);
+    } catch (e: any) {
+      triggerNotice(e?.message || `Failed to switch to "${shop.name}".`);
+    } finally {
+      setSwitchingShopId(null);
+    }
+  }
+
 
   async function handleExportBackup() {
     if (!activeShop || exportingBackup) return;
@@ -553,7 +568,7 @@ export function SettingsScreen() {
                   disabled={creatingShopLoading}
                   style={({ pressed }) => [styles.saveButton, pressed && styles.pressed]}>
                   <Text style={styles.saveButtonText}>
-                    {creatingShopLoading ? 'Creating…' : 'Create & Switch'}
+                    {creatingShopLoading ? 'Creating…' : 'Create Shop'}
                   </Text>
                 </Pressable>
               </View>
@@ -561,6 +576,8 @@ export function SettingsScreen() {
 
             {ownedShops.map((shop: Shop) => {
               const isActive = shop.id === activeShopId;
+              const isSwitchingThis = switchingShopId === shop.id;
+
               return (
                 <View key={shop.id} style={styles.shopListItem}>
                   <View style={styles.shopListInfo}>
@@ -575,17 +592,23 @@ export function SettingsScreen() {
                     <Pressable
                       accessibilityRole="button"
                       accessibilityLabel={`Switch to ${shop.name}`}
-                      onPress={() => {
-                        setActiveShopId(shop.id);
-                        triggerNotice(`Switched active shop to "${shop.name}"`);
-                      }}
-                      style={({ pressed }) => [styles.switchButton, pressed && styles.pressed]}>
-                      <Text style={styles.switchButtonText}>Switch</Text>
+                      disabled={Boolean(switchingShopId)}
+                      onPress={() => void handleSwitchShop(shop)}
+                      style={({ pressed }) => [
+                        styles.switchButton,
+                        (pressed || isSwitchingThis) && styles.pressed,
+                      ]}>
+                      {isSwitchingThis ? (
+                        <ActivityIndicator size="small" color="#FFFFFF" />
+                      ) : (
+                        <Text style={styles.switchButtonText}>Switch</Text>
+                      )}
                     </Pressable>
                   )}
                 </View>
               );
             })}
+
           </View>
 
           {/* Section 5: Logout */}

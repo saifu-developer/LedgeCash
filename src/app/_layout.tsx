@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useColorScheme, View } from 'react-native';
 
 import { BrandColors } from '@/constants/theme';
+import { restoreSession } from '@/lib/auth-service';
 import { initSyncEngine, triggerSync } from '@/lib/sync-service';
 import { loadPersistedAudit, useAuditStore } from '@/store/audit';
 import { loadPersistedShops, useShopStore } from '@/store/shops';
@@ -28,12 +29,14 @@ export default function RootLayout() {
       await loadPersistedUsers();
       await loadPersistedTransactions();
       await loadPersistedAudit();
+      await restoreSession();
       triggerSync(1200);
     })();
     return () => {
       cleanupSync();
     };
   }, []);
+
 
   useEffect(() => {
     if (isHydrated) {

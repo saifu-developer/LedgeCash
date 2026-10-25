@@ -54,12 +54,18 @@ public class SecurityConfig {
                         .requestMatchers(
                                 "/api/v1/auth/register-owner",
                                 "/api/v1/auth/login",
+                                "/api/v1/auth/owner-login",
                                 "/api/v1/auth/shop/**",
                                 "/h2-console/**",
                                 "/actuator/health",
                                 "/error"
                         ).permitAll()
-                        .requestMatchers("/api/v1/auth/create-worker", "/api/v1/auth/workers/**").hasRole("OWNER")
+                        .requestMatchers(
+                                "/api/v1/auth/create-worker",
+                                "/api/v1/auth/workers/**",
+                                "/api/v1/auth/switch-shop",
+                                "/api/v1/shops/**"
+                        ).hasRole("OWNER")
                         .requestMatchers(HttpMethod.PUT, "/api/v1/transactions/**").hasRole("OWNER")
                         .requestMatchers(HttpMethod.DELETE, "/api/v1/transactions/**").hasRole("OWNER")
                         .requestMatchers("/api/v1/transactions/**").authenticated()
